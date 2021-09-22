@@ -12,7 +12,11 @@ import tensorflow as tf
 import torch
 from copy import deepcopy
 from textwrap import dedent
+import pdb
 
+
+# Example:
+# python -m spinup.run ppo --hid "[32,32]" --env LunarLander-v2 --exp_name installtest --gamma 0.999
 
 # Command line args that will go to ExperimentGrid.run, and must possess unique
 # values (therefore must be treated separately).
@@ -29,7 +33,7 @@ SUBSTITUTIONS = {'env': 'env_name',
 MPI_COMPATIBLE_ALGOS = ['vpg', 'trpo', 'ppo']
 
 # Algo names (used in a few places)
-BASE_ALGO_NAMES = ['vpg', 'trpo', 'ppo', 'ddpg', 'td3', 'sac']
+BASE_ALGO_NAMES = ['vpg', 'ra_vpg', 'trpo', 'ppo', 'ddpg', 'td3', 'sac']
 
 
 def add_with_backends(algo_list):
@@ -150,7 +154,7 @@ def parse_and_execute_grid_search(cmd, args):
     if 'num_cpu' in run_kwargs and not(run_kwargs['num_cpu'] == 1):
         assert cmd in add_with_backends(MPI_COMPATIBLE_ALGOS), \
             friendly_err("This algorithm can't be run with num_cpu > 1.")
-
+    pdb.set_trace()
     # Special handling for environment: make sure that env_name is a real,
     # registered gym environment.
     valid_envs = [e.id for e in list(gym.envs.registry.all())]

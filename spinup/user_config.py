@@ -5,6 +5,7 @@ import os.path as osp
 # (Must be either 'tf1' or 'pytorch')
 DEFAULT_BACKEND = {
     'vpg': 'pytorch',
+    'ra_vpg': 'pytorch',
     'trpo': 'tf1',
     'ppo': 'pytorch',
     'ddpg': 'pytorch',
@@ -22,6 +23,6 @@ FORCE_DATESTAMP = False
 # Whether GridSearch provides automatically-generated default shorthands:
 DEFAULT_SHORTHAND = True
 
-# Tells the GridSearch how many seconds to pause for before launching 
+# Tells the GridSearch how many seconds to pause for before launching
 # experiments.
 WAIT_BEFORE_LAUNCH = 5
