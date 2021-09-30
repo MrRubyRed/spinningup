@@ -29,7 +29,7 @@ import random
 from shapely.geometry import Polygon, Point
 from shapely.affinity import affine_transform
 from shapely.ops import triangulate
-from gym_reachability.gym_reachability.envs import MultiPlayerLunarLanderReachability
+from spinup.gym_reachability.envs import MultiPlayerLunarLanderReachability
 
 
 class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
@@ -44,7 +44,7 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
                  target_type='default',
                  doneType='toFailureOrSuccess',
                  obstacle_sampling=False,
-                 discrete=True):
+                 discrete=False):
 
         self.parent_init = False
         super(OnePlayerReachAvoidLunarLander, self).__init__(
@@ -312,9 +312,9 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
             else:
                 # Need to have an actor when actions are continuous.
                 assert policy is not None, "Need actor-policy for continuous actions."
-                action = policy(state).to(self.device)
+                action = policy.mu_net(state).to(self.device)
                 xx = torch.cat([state, action.detach()]).to(self.device)
-                v[idx] = q_func(xx).item()
+                v[idx] = q_func(state).item()
             # v[idx] = max(g_x, min(l_x, v[idx]))
             it.iternext()
         # print("End value collection on grid.")

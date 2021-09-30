@@ -12,77 +12,76 @@ from gym.envs.registration import register
 
 register(
     id="cartpole_reach-v0",
-    entry_point="gym_reachability.gym_reachability.envs:CartPoleReachabilityEnv",
+    entry_point="spinup.gym_reachability.envs:CartPoleReachabilityEnv",
 )
 
 register(
     id="lunar_lander_reachability-v0",
-    entry_point="gym_reachability.gym_reachability.envs:LunarLanderReachability"
+    entry_point="spinup.gym_reachability.envs:LunarLanderReachability"
 )
 
 register(
     id="multi_player_lunar_lander_reachability-v0",
-    entry_point="gym_reachability.gym_reachability.envs:MultiPlayerLunarLanderReachability"
+    entry_point="spinup.gym_reachability.envs:MultiPlayerLunarLanderReachability"
 )
 
 register(
     id="two_player_pursuit_evasion_lunar_lander-v0",
-    entry_point="gym_reachability.gym_reachability.envs:TwoPlayerPursuitEvasionLunarLander"
+    entry_point="spinup.gym_reachability.envs:TwoPlayerPursuitEvasionLunarLander"
 )
 
 register(
     id="one_player_reach_avoid_lunar_lander-v0",
-    entry_point="gym_reachability.gym_reachability.envs:OnePlayerReachAvoidLunarLander"
+    entry_point="spinup.gym_reachability.envs:OnePlayerReachAvoidLunarLander"
 )
 
 register(
     id="double_integrator-v0",
-    entry_point="gym_reachability.gym_reachability.envs:DoubleIntegratorEnv"
+    entry_point="spinup.gym_reachability.envs:DoubleIntegratorEnv"
 )
 
 
 register(
     id="dubins_car-v0",
-    entry_point="gym_reachability.gym_reachability.envs:DubinsCarEnv"
+    entry_point="spinup.gym_reachability.envs:DubinsCarEnv"
 )
 
 register(
     id="dubins_car-v1",
-    entry_point="gym_reachability.gym_reachability.envs:DubinsCarOneEnv"
+    entry_point="spinup.gym_reachability.envs:DubinsCarOneEnv"
 )
 
 register(
     id="dubins_car_pe-v0",
-    entry_point="gym_reachability.gym_reachability.envs:DubinsCarPEEnv"
+    entry_point="spinup.gym_reachability.envs:DubinsCarPEEnv"
 )
 
 register(
     id="point_mass-v0",
-    entry_point="gym_reachability.gym_reachability.envs:PointMassEnv"
+    entry_point="spinup.gym_reachability.envs:PointMassEnv"
 )
 
 register(
     id="zermelo_kc-v0",
-    entry_point="gym_reachability.gym_reachability.envs:ZermeloKCEnv"
+    entry_point="spinup.gym_reachability.envs:ZermeloKCEnv"
 )
 
 register(
     id="zermelo_cont-v0",
-    entry_point="gym_reachability.gym_reachability.envs:ZermeloContEnv"
+    entry_point="spinup.gym_reachability.envs:ZermeloContEnv"
 )
 
 register(
     id="zermelo_show-v0",
-    entry_point="gym_reachability.gym_reachability.envs:ZermeloShowEnv"
+    entry_point="spinup.gym_reachability.envs:ZermeloShowEnv"
 )
 
 register(
     id="cheetah_balance-v0",
-    entry_point="gym_reachability.gym_reachability.envs:CheetahBalanceEnv"
+    entry_point="spinup.gym_reachability.envs:CheetahBalanceEnv"
 )
-
 
 register(
     id="cheetah_balance_penalize-v0",
-    entry_point="gym_reachability.gym_reachability.envs:CheetahBalancePenalizeEnv"
+    entry_point="spinup.gym_reachability.envs:CheetahBalancePenalizeEnv"
 )

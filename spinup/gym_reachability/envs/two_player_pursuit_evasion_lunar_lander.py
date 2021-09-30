@@ -29,7 +29,7 @@ import random
 from shapely.geometry import Polygon, Point
 from shapely.affinity import affine_transform
 from shapely.ops import triangulate
-from gym_reachability.gym_reachability.envs import MultiPlayerLunarLanderReachability
+from spinup.gym_reachability.envs import MultiPlayerLunarLanderReachability
 
 
 class TwoPlayerPursuitEvasionLunarLander(MultiPlayerLunarLanderReachability):

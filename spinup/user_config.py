@@ -6,6 +6,7 @@ import os.path as osp
 DEFAULT_BACKEND = {
     'vpg': 'pytorch',
     'ra_vpg': 'pytorch',
+    'ra_ppo': 'pytorch',
     'trpo': 'tf1',
     'ppo': 'pytorch',
     'ddpg': 'pytorch',
@@ -25,4 +26,4 @@ DEFAULT_SHORTHAND = True
 
 # Tells the GridSearch how many seconds to pause for before launching
 # experiments.
-WAIT_BEFORE_LAUNCH = 5
+WAIT_BEFORE_LAUNCH = 1

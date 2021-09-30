@@ -30,18 +30,89 @@ def discount_cumsum(x, discount):
     """
     magic from rllab for computing discounted cumulative sums of vectors.
 
-    input: 
-        vector x, 
-        [x0, 
-         x1, 
+    input:
+        vector x,
+        [x0,
+         x1,
          x2]
 
     output:
-        [x0 + discount * x1 + discount^2 * x2,  
+        [x0 + discount * x1 + discount^2 * x2,
          x1 + discount * x2,
          x2]
     """
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+
+
+def discount_minmax_overtime(l, g, gamma, debug=False):
+    """
+    magic from rllab for computing discounted cumulative sums of vectors.
+
+    input:
+        vectors l, g
+        [l0, [g0,
+         l1,  g1,
+         l2]  g2]
+
+    output:
+        [ gamma * max(g1, min(l1, gamma*max(g2, min(l2, gamma*max(g3,l3))))),
+         (1-gamma)*max(l1,g1) + gamma * max(g1,min(l1, (1-gamma)*max(l2,g2) + )),
+         gamma * max(g1, min(l1, gamma*max(l2,g2))),
+         max(l2,g2)]
+    """
+    assert len(g) == len(l)
+    l_ = [max(l[-1], g[-1])]
+    if len(l) == 1:
+        return np.array(l_)
+    assert ((len(l) - 2) >= 0)
+    for ii in range(len(l)-2, 0, -1):
+        l_.insert(0,
+            (1.0 - gamma) * max(l[ii], g[ii]) + gamma * max(g[ii], min(l[ii], l_[0])))
+    # Check that cost functional is correctly computed for gamma = 1
+    if debug:
+        import pdb
+        pdb.set_trace()
+        g_ = np.copy(g)
+        _l = np.copy(l)
+        debug_list = []
+        while len(g_) > 0:
+            ep_ret = np.inf
+            max_viol = -np.inf
+            for ii in range(len(g_)):
+                max_viol = max(max_viol, g_[ii])
+                ep_ret = min(ep_ret, max(_l[ii], max_viol))
+            debug_list.append(ep_ret)
+            g_ = g_[1:]
+            _l = _l[1:]
+        print(l_)
+        print(debug_list)
+
+    return np.array(l_)
+
+
+def discount_min_overtime(l, gamma):
+    """
+    magic from rllab for computing discounted cumulative sums of vectors.
+
+    input:
+        vectors l, g
+        [l0, [g0,
+         l1,  g1,
+         l2]  g2]
+
+    output:
+        [ gamma * max(g1, min(l1, gamma*max(g2, min(l2, gamma*max(g3,l3))))),
+         (1-gamma)*max(l1,g1) + gamma * max(g1,min(l1, (1-gamma)*max(l2,g2) + )),
+         gamma * max(g1, min(l1, gamma*max(l2,g2))),
+         max(l2,g2)]
+    """
+    l_ = [l[-1]]
+    if len(l) == 1:
+        return np.array(l_)
+    assert ((len(l) - 2) >= 0)
+    for ii in range(len(l)-2, 0, -1):
+        l_.insert(0, (1.0 - gamma) * l[ii] + gamma * min(l[ii], l_[0]))
+    return np.array(l_)
 
 
 class Actor(nn.Module):
@@ -53,7 +124,7 @@ class Actor(nn.Module):
         raise NotImplementedError
 
     def forward(self, obs, act=None):
-        # Produce action distributions for given observations, and 
+        # Produce action distributions for given observations, and
         # optionally compute the log likelihood of given actions under
         # those distributions.
         pi = self._distribution(obs)
@@ -64,7 +135,7 @@ class Actor(nn.Module):
 
 
 class MLPCategoricalActor(Actor):
-    
+
     def __init__(self, obs_dim, act_dim, hidden_sizes, activation):
         super().__init__()
         self.logits_net = mlp([obs_dim] + list(hidden_sizes) + [act_dim], activation)
@@ -108,7 +179,7 @@ class MLPCritic(nn.Module):
 class MLPActorCritic(nn.Module):
 
 
-    def __init__(self, observation_space, action_space, 
+    def __init__(self, observation_space, action_space,
                  hidden_sizes=(64,64), activation=nn.Tanh):
         super().__init__()
 

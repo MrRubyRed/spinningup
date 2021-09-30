@@ -58,14 +58,14 @@ class PPOBuffer:
         path_slice = slice(self.path_start_idx, self.ptr)
         rews = np.append(self.rew_buf[path_slice], last_val)
         vals = np.append(self.val_buf[path_slice], last_val)
-        
+
         # the next two lines implement GAE-Lambda advantage calculation
         deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
         self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam)
-        
+
         # the next line computes rewards-to-go, to be targets for the value function
         self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1]
-        
+
         self.path_start_idx = self.ptr
 
     def get(self):
@@ -85,12 +85,12 @@ class PPOBuffer:
 
 
 
-def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0, 
+def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         steps_per_epoch=4000, epochs=50, gamma=0.99, clip_ratio=0.2, pi_lr=3e-4,
         vf_lr=1e-3, train_pi_iters=80, train_v_iters=80, lam=0.97, max_ep_len=1000,
         target_kl=0.01, logger_kwargs=dict(), save_freq=10):
     """
-    Proximal Policy Optimization (by clipping), 
+    Proximal Policy Optimization (by clipping),
 
     with early stopping based on approximate KL
 
@@ -98,15 +98,15 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         env_fn : A function which creates a copy of the environment.
             The environment must satisfy the OpenAI Gym API.
 
-        actor_critic: The constructor method for a PyTorch Module with a 
-            ``step`` method, an ``act`` method, a ``pi`` module, and a ``v`` 
-            module. The ``step`` method should accept a batch of observations 
+        actor_critic: The constructor method for a PyTorch Module with a
+            ``step`` method, an ``act`` method, a ``pi`` module, and a ``v``
+            module. The ``step`` method should accept a batch of observations
             and return:
 
             ===========  ================  ======================================
             Symbol       Shape             Description
             ===========  ================  ======================================
-            ``a``        (batch, act_dim)  | Numpy array of actions for each 
+            ``a``        (batch, act_dim)  | Numpy array of actions for each
                                            | observation.
             ``v``        (batch,)          | Numpy array of value estimates
                                            | for the provided observations.
@@ -116,7 +116,7 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             The ``act`` method behaves the same as ``step`` but only returns ``a``.
 
-            The ``pi`` module's forward call should accept a batch of 
+            The ``pi`` module's forward call should accept a batch of
             observations and optionally a batch of actions, and return:
 
             ===========  ================  ======================================
@@ -126,8 +126,8 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                                            | a batch of distributions describing
                                            | the policy for the provided observations.
             ``logp_a``   (batch,)          | Optional (only returned if batch of
-                                           | actions is given). Tensor containing 
-                                           | the log probability, according to 
+                                           | actions is given). Tensor containing
+                                           | the log probability, according to
                                            | the policy, of the provided actions.
                                            | If actions not given, will contain
                                            | ``None``.
@@ -140,17 +140,17 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             Symbol       Shape             Description
             ===========  ================  ======================================
             ``v``        (batch,)          | Tensor containing the value estimates
-                                           | for the provided observations. (Critical: 
+                                           | for the provided observations. (Critical:
                                            | make sure to flatten this!)
             ===========  ================  ======================================
 
 
-        ac_kwargs (dict): Any kwargs appropriate for the ActorCritic object 
+        ac_kwargs (dict): Any kwargs appropriate for the ActorCritic object
             you provided to PPO.
 
         seed (int): Seed for random number generators.
 
-        steps_per_epoch (int): Number of steps of interaction (state-action pairs) 
+        steps_per_epoch (int): Number of steps of interaction (state-action pairs)
             for the agent and the environment in each epoch.
 
         epochs (int): Number of epochs of interaction (equivalent to
@@ -159,21 +159,21 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         gamma (float): Discount factor. (Always between 0 and 1.)
 
         clip_ratio (float): Hyperparameter for clipping in the policy objective.
-            Roughly: how far can the new policy go from the old policy while 
-            still profiting (improving the objective function)? The new policy 
+            Roughly: how far can the new policy go from the old policy while
+            still profiting (improving the objective function)? The new policy
             can still go farther than the clip_ratio says, but it doesn't help
             on the objective anymore. (Usually small, 0.1 to 0.3.) Typically
-            denoted by :math:`\epsilon`. 
+            denoted by :math:`\epsilon`.
 
         pi_lr (float): Learning rate for policy optimizer.
 
         vf_lr (float): Learning rate for value function optimizer.
 
-        train_pi_iters (int): Maximum number of gradient descent steps to take 
+        train_pi_iters (int): Maximum number of gradient descent steps to take
             on policy loss per epoch. (Early stopping may cause optimizer
             to take fewer than this.)
 
-        train_v_iters (int): Number of gradient descent steps to take on 
+        train_v_iters (int): Number of gradient descent steps to take on
             value function per epoch.
 
         lam (float): Lambda for GAE-Lambda. (Always between 0 and 1,
@@ -182,7 +182,7 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         max_ep_len (int): Maximum length of trajectory / episode / rollout.
 
         target_kl (float): Roughly what KL divergence we think is appropriate
-            between new and old policies after an update. This will get used 
+            between new and old policies after an update. This will get used
             for early stopping. (Usually small, 0.01 or 0.05.)
 
         logger_kwargs (dict): Keyword args for EpochLogger.
@@ -306,7 +306,7 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             # save and log
             buf.store(o, a, r, v, logp)
             logger.store(VVals=v)
-            
+
             # Update obs (critical!)
             o = next_o
 
@@ -373,6 +373,6 @@ if __name__ == '__main__':
     logger_kwargs = setup_logger_kwargs(args.exp_name, args.seed)
 
     ppo(lambda : gym.make(args.env), actor_critic=core.MLPActorCritic,
-        ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), gamma=args.gamma, 
+        ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), gamma=args.gamma,
         seed=args.seed, steps_per_epoch=args.steps, epochs=args.epochs,
         logger_kwargs=logger_kwargs)

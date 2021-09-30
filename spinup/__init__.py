@@ -5,6 +5,7 @@ import tensorflow as tf
 
 # Reach avoid RL environments.
 import spinup.gym_reachability
+import spinup.gym_reachability.envs
 
 # Algorithms
 from spinup.algos.tf1.ddpg.ddpg import ddpg as ddpg_tf1
@@ -21,6 +22,7 @@ from spinup.algos.pytorch.td3.td3 import td3 as td3_pytorch
 from spinup.algos.pytorch.trpo.trpo import trpo as trpo_pytorch
 from spinup.algos.pytorch.vpg.vpg import vpg as vpg_pytorch
 from spinup.algos.pytorch.ra_vpg.ra_vpg import ra_vpg as ra_vpg_pytorch
+from spinup.algos.pytorch.ra_ppo.ra_ppo import ra_ppo as ra_ppo_pytorch
 
 # Loggers
 from spinup.utils.logx import Logger, EpochLogger

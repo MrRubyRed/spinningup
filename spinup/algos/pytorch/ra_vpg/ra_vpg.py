@@ -3,13 +3,13 @@ import torch
 from torch.optim import Adam
 import gym
 import time
-import spinup.algos.pytorch.vpg.core as core
+import spinup.algos.pytorch.ra_vpg.ra_core as core
 from spinup.utils.logx import EpochLogger
 from spinup.utils.mpi_pytorch import setup_pytorch_for_mpi, sync_params, mpi_avg_grads
 from spinup.utils.mpi_tools import mpi_fork, mpi_avg, proc_id, mpi_statistics_scalar, num_procs
 
 
-class VPGBuffer:
+class RA_VPGBuffer:
     """
     A buffer for storing trajectories experienced by a VPG agent interacting
     with the environment, and using Generalized Advantage Estimation (GAE-Lambda)
@@ -17,17 +17,22 @@ class VPGBuffer:
     """
 
     def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.95):
+        self.size = size
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
         self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
         self.act_buf = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
         self.adv_buf = np.zeros(size, dtype=np.float32)
         self.rew_buf = np.zeros(size, dtype=np.float32)
+        self.l_x_buf = np.zeros(size, dtype=np.float32)
+        self.g_x_buf = np.zeros(size, dtype=np.float32)
         self.ret_buf = np.zeros(size, dtype=np.float32)
         self.val_buf = np.zeros(size, dtype=np.float32)
         self.logp_buf = np.zeros(size, dtype=np.float32)
         self.gamma, self.lam = gamma, lam
         self.ptr, self.path_start_idx, self.max_size = 0, 0, size
 
-    def store(self, obs, act, rew, val, logp):
+    def store(self, obs, act, rew, val, logp, l_x=None, g_x=None):
         """
         Append one timestep of agent-environment interaction to the buffer.
         """
@@ -35,6 +40,8 @@ class VPGBuffer:
         self.obs_buf[self.ptr] = obs
         self.act_buf[self.ptr] = act
         self.rew_buf[self.ptr] = rew
+        self.l_x_buf[self.ptr] = l_x
+        self.g_x_buf[self.ptr] = g_x
         self.val_buf[self.ptr] = val
         self.logp_buf[self.ptr] = logp
         self.ptr += 1
@@ -57,15 +64,20 @@ class VPGBuffer:
 
         path_slice = slice(self.path_start_idx, self.ptr)
         rews = np.append(self.rew_buf[path_slice], last_val)
+        l_xs = np.append(self.l_x_buf[path_slice], last_val)
+        g_xs = np.append(self.g_x_buf[path_slice], last_val)
         vals = np.append(self.val_buf[path_slice], last_val)
-        
+
         # the next two lines implement GAE-Lambda advantage calculation
-        deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
-        self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam)
-        
+        # deltas = (rews[:-1] + self.gamma * vals[1:]) - vals[:-1]
+        # self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam)
+        self.adv_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, self.gamma)
+        # self.adv_buf[path_slice] = core.discount_min_overtime(l_xs, self.gamma)
+
         # the next line computes rewards-to-go, to be targets for the value function
-        self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1]
-        
+        self.ret_buf[path_slice] = self.adv_buf[path_slice].copy()
+        # self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1]
+
         self.path_start_idx = self.ptr
 
     def get(self):
@@ -85,12 +97,12 @@ class VPGBuffer:
 
 
 
-def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0, 
+def ra_vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         steps_per_epoch=4000, epochs=50, gamma=0.99, pi_lr=3e-4,
         vf_lr=1e-3, train_v_iters=80, lam=0.97, max_ep_len=1000,
         logger_kwargs=dict(), save_freq=10):
     """
-    Vanilla Policy Gradient 
+    Vanilla Policy Gradient
 
     (with GAE-Lambda for advantage estimation)
 
@@ -98,15 +110,15 @@ def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         env_fn : A function which creates a copy of the environment.
             The environment must satisfy the OpenAI Gym API.
 
-        actor_critic: The constructor method for a PyTorch Module with a 
-            ``step`` method, an ``act`` method, a ``pi`` module, and a ``v`` 
-            module. The ``step`` method should accept a batch of observations 
+        actor_critic: The constructor method for a PyTorch Module with a
+            ``step`` method, an ``act`` method, a ``pi`` module, and a ``v``
+            module. The ``step`` method should accept a batch of observations
             and return:
 
             ===========  ================  ======================================
             Symbol       Shape             Description
             ===========  ================  ======================================
-            ``a``        (batch, act_dim)  | Numpy array of actions for each 
+            ``a``        (batch, act_dim)  | Numpy array of actions for each
                                            | observation.
             ``v``        (batch,)          | Numpy array of value estimates
                                            | for the provided observations.
@@ -116,7 +128,7 @@ def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
 
             The ``act`` method behaves the same as ``step`` but only returns ``a``.
 
-            The ``pi`` module's forward call should accept a batch of 
+            The ``pi`` module's forward call should accept a batch of
             observations and optionally a batch of actions, and return:
 
             ===========  ================  ======================================
@@ -126,8 +138,8 @@ def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
                                            | a batch of distributions describing
                                            | the policy for the provided observations.
             ``logp_a``   (batch,)          | Optional (only returned if batch of
-                                           | actions is given). Tensor containing 
-                                           | the log probability, according to 
+                                           | actions is given). Tensor containing
+                                           | the log probability, according to
                                            | the policy, of the provided actions.
                                            | If actions not given, will contain
                                            | ``None``.
@@ -140,16 +152,16 @@ def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             Symbol       Shape             Description
             ===========  ================  ======================================
             ``v``        (batch,)          | Tensor containing the value estimates
-                                           | for the provided observations. (Critical: 
+                                           | for the provided observations. (Critical:
                                            | make sure to flatten this!)
             ===========  ================  ======================================
 
-        ac_kwargs (dict): Any kwargs appropriate for the ActorCritic object 
+        ac_kwargs (dict): Any kwargs appropriate for the ActorCritic object
             you provided to VPG.
 
         seed (int): Seed for random number generators.
 
-        steps_per_epoch (int): Number of steps of interaction (state-action pairs) 
+        steps_per_epoch (int): Number of steps of interaction (state-action pairs)
             for the agent and the environment in each epoch.
 
         epochs (int): Number of epochs of interaction (equivalent to
@@ -161,7 +173,7 @@ def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
 
         vf_lr (float): Learning rate for value function optimizer.
 
-        train_v_iters (int): Number of gradient descent steps to take on 
+        train_v_iters (int): Number of gradient descent steps to take on
             value function per epoch.
 
         lam (float): Lambda for GAE-Lambda. (Always between 0 and 1,
@@ -205,7 +217,7 @@ def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
 
     # Set up experience buffer
     local_steps_per_epoch = int(steps_per_epoch / num_procs())
-    buf = VPGBuffer(obs_dim, act_dim, local_steps_per_epoch, gamma, lam)
+    buf = RA_VPGBuffer(obs_dim, act_dim, local_steps_per_epoch, gamma, lam)
 
     # Set up function for computing VPG policy loss
     def compute_loss_pi(data):
@@ -213,7 +225,7 @@ def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
 
         # Policy loss
         pi, logp = ac.pi(obs, act)
-        loss_pi = -(logp * adv).mean()
+        loss_pi = (logp * adv).mean()  # Removed "-" since we are minimizing.
 
         # Useful extra info
         approx_kl = (logp_old - logp).mean().item()
@@ -266,21 +278,28 @@ def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
 
     # Prepare for interaction with environment
     start_time = time.time()
-    o, ep_ret, ep_len = env.reset(), 0, 0
+    o = env.reset()
+    ep_ret = np.inf
+    max_viol = -np.inf
+    ep_len = 0
 
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
         for t in range(local_steps_per_epoch):
             a, v, logp = ac.step(torch.as_tensor(o, dtype=torch.float32))
 
-            next_o, r, d, _ = env.step(a)
-            ep_ret += r
+            next_o, r, d, info = env.step(a)
+            assert ("g_x" in info and "l_x" in info)
+
+            # Used for logging.
+            max_viol = max(max_viol, info["g_x"])
+            ep_ret = min(ep_ret, max(info["l_x"], max_viol))
             ep_len += 1
 
             # save and log
-            buf.store(o, a, r, v, logp)
+            buf.store(o, a, r, v, logp, l_x=info["l_x"], g_x=info["g_x"])
             logger.store(VVals=v)
-            
+
             # Update obs (critical!)
             o = next_o
 
@@ -294,16 +313,17 @@ def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
                 # if trajectory didn't reach terminal state, bootstrap value target
                 if timeout or epoch_ended:
                     _, v, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
+                    v = max(info["g_x"], min(v, info["l_x"]))
                 else:
-                    v = 0
+                    v = max(info["g_x"], info["l_x"])
                 buf.finish_path(v)
                 if terminal:
                     # only save EpRet / EpLen if trajectory finished
                     logger.store(EpRet=ep_ret, EpLen=ep_len)
-                o, ep_ret, ep_len = env.reset(), 0, 0
+                o, ep_ret, max_viol, ep_len = env.reset(), np.inf, -np.inf, 0
 
 
-        # Save model
+        # Save model.
         if (epoch % save_freq == 0) or (epoch == epochs-1):
             logger.save_state({'env': env}, None)
 
@@ -324,19 +344,22 @@ def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         logger.log_tabular('KL', average_only=True)
         logger.log_tabular('Time', time.time()-start_time)
         logger.dump_tabular()
+        if epoch % 50 == 0:
+            env.visualize(ac.v, ac.pi)#, T=local_steps_per_epoch)
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, default='HalfCheetah-v2')
+    parser.add_argument('--env', type=str, default='zermelo_cont-v0')
     parser.add_argument('--hid', type=int, default=64)
     parser.add_argument('--l', type=int, default=2)
-    parser.add_argument('--gamma', type=float, default=0.99)
+    parser.add_argument('--gamma', type=float, default=1)
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--cpu', type=int, default=4)
     parser.add_argument('--steps', type=int, default=4000)
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--exp_name', type=str, default='vpg')
+    parser.add_argument('--ep_len', type=int, default=50)
+    parser.add_argument('--exp_name', type=str, default='ra_vpg')
     args = parser.parse_args()
 
     mpi_fork(args.cpu)  # run parallel code with mpi
@@ -344,7 +367,8 @@ if __name__ == '__main__':
     from spinup.utils.run_utils import setup_logger_kwargs
     logger_kwargs = setup_logger_kwargs(args.exp_name, args.seed)
 
-    vpg(lambda : gym.make(args.env), actor_critic=core.MLPActorCritic,
-        ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), gamma=args.gamma, 
+    ra_vpg(
+        lambda : gym.make(args.env), actor_critic=core.MLPActorCritic,
+        ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), gamma=args.gamma,
         seed=args.seed, steps_per_epoch=args.steps, epochs=args.epochs,
-        logger_kwargs=logger_kwargs)
+        max_ep_len=args.ep_len, logger_kwargs=logger_kwargs)

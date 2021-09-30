@@ -31,7 +31,7 @@ class continuousSpace(object):
 
 
 class ZermeloContEnv(gym.Env):
-    def __init__(self, device, mode='normal', doneType='toEnd'):
+    def __init__(self, device='cpu', mode='normal', doneType='toEnd'):
 
         # State bounds.
         self.bounds = np.array([[-2, 2],  # axis_0 = state, axis_1 = bounds.
@@ -194,7 +194,7 @@ class ZermeloContEnv(gym.Env):
         #     cost = self.reward
         # else:
         #     cost = 0.
-        cost = 0.
+        cost = max(l_x, g_x)
 
         # done = False
         # if self.doneType is 'toFailureOrSuccess':
@@ -257,7 +257,7 @@ class ZermeloContEnv(gym.Env):
             x, y = state
 
         # one step forward
-        x = x + self.time_step * u[0]
+        x = x + self.time_step * self.horizontal_rate[0] * np.tanh(u[0])
         y = y + self.time_step * self.upward_speed
 
         l_x = self.target_margin(np.array([x, y]))
@@ -302,7 +302,7 @@ class ZermeloContEnv(gym.Env):
                             enclosure_safety_margin)
         # safety_margin = enclosure_safety_margin
         if debug:
-            return box1_safety_margin, box2_safety_margin, vertical_margin, horizontal_margin 
+            return box1_safety_margin, box2_safety_margin, vertical_margin, horizontal_margin
 
         return self.scaling * safety_margin
 
@@ -473,7 +473,7 @@ class ZermeloContEnv(gym.Env):
             else:
                 z = max([l_x, g_x])
                 state = torch.FloatTensor([x, y, z]).to(self.device)
-            action = policy(state)
+            action = policy.mu_net(state)
 
             xx = torch.cat([state, action.detach()]).to(self.device)
             if addBias:
@@ -543,7 +543,7 @@ class ZermeloContEnv(gym.Env):
                     break
 
             state_tensor = torch.FloatTensor(state).to(self.device)
-            u = policy(state_tensor).detach()
+            u = policy.mu_net(state_tensor).detach()
 
             state, _ = self.integrate_forward(state, u)
             traj_x.append(state[0])
@@ -581,7 +581,7 @@ class ZermeloContEnv(gym.Env):
 
     def visualize(  self, q_func, policy,
                     vmin=-1, vmax=1, nx=81, ny=241, cmap='seismic',
-                    labels=['', ''], boolPlot=False, addBias=False, T=10):
+                    labels=['', ''], boolPlot=False, addBias=False, T=50):
         """ Overlays analytic safe set on top of state value function.
 
         Args:
