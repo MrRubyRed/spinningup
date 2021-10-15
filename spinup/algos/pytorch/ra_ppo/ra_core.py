@@ -1,6 +1,7 @@
 import numpy as np
 import scipy.signal
 from gym.spaces import Box, Discrete
+import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
@@ -70,8 +71,6 @@ def discount_minmax_overtime(l, g, gamma, debug=False):
             (1.0 - gamma) * max(l[ii], g[ii]) + gamma * max(g[ii], min(l[ii], l_[0])))
     # Check that cost functional is correctly computed for gamma = 1
     if debug:
-        import pdb
-        pdb.set_trace()
         g_ = np.copy(g)
         _l = np.copy(l)
         debug_list = []
@@ -86,6 +85,14 @@ def discount_minmax_overtime(l, g, gamma, debug=False):
             _l = _l[1:]
         print(l_)
         print(debug_list)
+        plt.clf()
+        plt.plot(l, 'g')
+        # plt.plot(debug_list, 'b')
+        plt.plot(g, 'k')
+        plt.plot(l_, 'r')
+        plt.pause(0.1)
+        import pdb
+        pdb.set_trace()
 
     return np.array(l_)
 
@@ -173,7 +180,6 @@ class MLPCritic(nn.Module):
 
     def forward(self, obs):
         return torch.squeeze(self.v_net(obs), -1) # Critical to ensure v has right shape.
-
 
 
 class MLPActorCritic(nn.Module):

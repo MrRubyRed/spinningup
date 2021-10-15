@@ -46,7 +46,7 @@ class RA_PPOBuffer:
         self.logp_buf[self.ptr] = logp
         self.ptr += 1
 
-    def finish_path(self, last_val=0):
+    def finish_path(self, last_val=None):
         """
         Call this at the end of a trajectory, or when one gets cut off
         by an epoch ending. This looks back in the buffer to where the
@@ -63,19 +63,23 @@ class RA_PPOBuffer:
         """
 
         path_slice = slice(self.path_start_idx, self.ptr)
-        rews = np.append(self.rew_buf[path_slice], last_val)
-        l_xs = np.append(self.l_x_buf[path_slice], last_val)
-        g_xs = np.append(self.g_x_buf[path_slice], last_val)
-        vals = np.append(self.val_buf[path_slice], last_val)
+        # rews = np.append(self.rew_buf[path_slice], last_val)
+        # vals = np.append(self.val_buf[path_slice], last_val)
+        if last_val is None:
+            l_xs = np.append(self.l_x_buf[path_slice], self.l_x_buf[path_slice][-1])
+        else:
+            l_xs = np.append(self.l_x_buf[path_slice], last_val)
+        g_xs = np.append(self.g_x_buf[path_slice], self.g_x_buf[path_slice][-1])
 
         # the next two lines implement GAE-Lambda advantage calculation
         # deltas = (rews[:-1] + self.gamma * vals[1:]) - vals[:-1]
         # self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam)
-        self.adv_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, self.gamma)
+        self.adv_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, self.gamma)#[:-1]
         # self.adv_buf[path_slice] = core.discount_min_overtime(l_xs, self.gamma)
 
         # the next line computes rewards-to-go, to be targets for the value function
         self.ret_buf[path_slice] = self.adv_buf[path_slice].copy()
+        # self.ret_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, 1.0)#[:-1]
         # self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1]
 
         self.path_start_idx = self.ptr
@@ -90,7 +94,7 @@ class RA_PPOBuffer:
         self.ptr, self.path_start_idx = 0, 0
         # the next two lines implement the advantage normalization trick
         adv_mean, adv_std = mpi_statistics_scalar(self.adv_buf)
-        self.adv_buf = (self.adv_buf - adv_mean) / adv_std
+        self.adv_buf = (self.adv_buf - adv_mean) / (adv_std + 1e-7)
         data = dict(obs=self.obs_buf, act=self.act_buf, ret=self.ret_buf,
                     adv=self.adv_buf, logp=self.logp_buf)
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in data.items()}
@@ -156,7 +160,7 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             ===========  ================  ======================================
 
         ac_kwargs (dict): Any kwargs appropriate for the ActorCritic object
-            you provided to VPG.
+            you provided to PPO.
 
         seed (int): Seed for random number generators.
 
@@ -286,35 +290,6 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
                      KL=kl, Entropy=ent, ClipFrac=cf,
                      DeltaLossPi=(loss_pi.item() - pi_l_old),
                      DeltaLossV=(loss_v.item() - v_l_old))
-    # def update():
-    #     data = buf.get()
-
-    #     # Get loss and info values before update
-    #     pi_l_old, pi_info_old = compute_loss_pi(data)
-    #     pi_l_old = pi_l_old.item()
-    #     v_l_old = compute_loss_v(data).item()
-
-    #     # Train policy with a single step of gradient descent
-    #     pi_optimizer.zero_grad()
-    #     loss_pi, pi_info = compute_loss_pi(data)
-    #     loss_pi.backward()
-    #     mpi_avg_grads(ac.pi)    # average grads across MPI processes
-    #     pi_optimizer.step()
-
-    #     # Value function learning
-    #     for i in range(train_v_iters):
-    #         vf_optimizer.zero_grad()
-    #         loss_v = compute_loss_v(data)
-    #         loss_v.backward()
-    #         mpi_avg_grads(ac.v)    # average grads across MPI processes
-    #         vf_optimizer.step()
-
-    #     # Log changes from update
-    #     kl, ent = pi_info['kl'], pi_info_old['ent']
-    #     logger.store(LossPi=pi_l_old, LossV=v_l_old,
-    #                  KL=kl, Entropy=ent,
-    #                  DeltaLossPi=(loss_pi.item() - pi_l_old),
-    #                  DeltaLossV=(loss_v.item() - v_l_old))
 
     # Prepare for interaction with environment
     start_time = time.time()
@@ -343,9 +318,9 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             # Update obs (critical!)
             o = next_o
 
-            timeout = ep_len == max_ep_len
-            terminal = d or timeout
-            epoch_ended = t==local_steps_per_epoch-1
+            timeout = (ep_len == max_ep_len)
+            terminal = (d or timeout)
+            epoch_ended = (t == local_steps_per_epoch-1)
 
             if terminal or epoch_ended:
                 if epoch_ended and not(terminal):
@@ -354,8 +329,10 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
                 if timeout or epoch_ended:
                     _, v, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
                     v = max(info["g_x"], min(v, info["l_x"]))
+                    # buf.finish_path(v)
                 else:
                     v = max(info["g_x"], info["l_x"])
+                    # buf.finish_path()
                 buf.finish_path(v)
                 if terminal:
                     # only save EpRet / EpLen if trajectory finished
@@ -384,8 +361,12 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         logger.log_tabular('KL', average_only=True)
         logger.log_tabular('Time', time.time()-start_time)
         logger.dump_tabular()
-        if epoch % 10 == 0:
-            env.visualize(ac.v, ac.pi)#, T=local_steps_per_epoch)
+        if epoch % 25 == 0:
+            results = env.simulate_trajectories(
+                ac.pi, T=local_steps_per_epoch * 10, num_rnd_traj=100,
+                keepOutOf=False, toEnd=False)[1]
+            env.visualize(ac.v, ac.pi)  # , T=local_steps_per_epoch)
+            print("Percent reached = ", np.sum(results == 1))
 
 if __name__ == '__main__':
     import argparse

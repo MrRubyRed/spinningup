@@ -196,6 +196,17 @@ class ZermeloContEnv(gym.Env):
         #     cost = 0.
         cost = max(l_x, g_x)
 
+        if self.doneType == 'toEnd':
+            outsideTop   = (self.state[1] >= self.bounds[1,1])
+            outsideLeft  = (self.state[0] <= self.bounds[0,0])
+            outsideRight = (self.state[0] >= self.bounds[0,1])
+            done = outsideTop or outsideLeft or outsideRight
+        else:
+            done = fail or success
+            assert self.doneType == 'TF', 'invalid doneType'
+
+        info = {"g_x": g_x, "l_x": l_x}
+
         # done = False
         # if self.doneType is 'toFailureOrSuccess':
         #     if fail:
@@ -226,10 +237,10 @@ class ZermeloContEnv(gym.Env):
         #     assert False, "Not implemented yet!"
 
         # If done flag has not triggered, just collect normal info.
-        if not done:
-            info = {"g_x": g_x, "l_x": l_x}
-        else:
-            info = {"g_x": self.penalty, "l_x": l_x}
+        # if not done:
+        #     info = {"g_x": g_x, "l_x": l_x}
+        # else:
+        #     info = {"g_x": self.penalty, "l_x": l_x}
 
         # done = fail # or success
         # assert self.doneType == 'TF', 'invalid doneType'

@@ -145,6 +145,7 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
         inside = 2*self.target_xy_polygon.contains(p) - 1
         vel_l = speed - self.vy_bound/10.0
         return max(-inside*L2_distance, vel_l)
+        # return -inside*L2_distance
 
     def safety_margin(self, state):
         # States come in sim_space.

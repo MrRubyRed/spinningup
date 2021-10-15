@@ -13,7 +13,7 @@ import random
 class ZermeloKCEnv(gym.Env):
 
 
-    def __init__(self, device, mode='normal', doneType='toEnd'):
+    def __init__(self, device='cpu', mode='normal', doneType='toEnd'):
 
         # State bounds.
         self.bounds = np.array([[-2, 2],  # axis_0 = state, axis_1 = bounds.
@@ -188,6 +188,15 @@ class ZermeloKCEnv(gym.Env):
                 else:
                     cost = 0.
         # done
+        # fail = g_x_cur > 0
+        # success = l_x_cur <= 0
+        # done = fail
+        # cost = max(l_x_cur, g_x_cur)
+        # If done flag has not triggered, just collect normal info.
+        # if not done:
+        #     info = {"g_x": g_x_cur, "l_x": l_x_cur}
+        # else:
+        #     info = {"g_x": g_x_cur, "l_x": l_x_cur}
         if self.doneType == 'toEnd':
             outsideTop   = (self.state[1] >= self.bounds[1,1])
             outsideLeft  = (self.state[0] <= self.bounds[0,0])
@@ -300,7 +309,7 @@ class ZermeloKCEnv(gym.Env):
         torch.manual_seed(self.seed_val)
         torch.cuda.manual_seed(self.seed_val)
         torch.cuda.manual_seed_all(self.seed_val)  # if you are using multi-GPU.
-        random.seed(self.seed_val) 
+        random.seed(self.seed_val)
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
 
@@ -435,7 +444,7 @@ class ZermeloKCEnv(gym.Env):
             if addBias:
                 v[idx] = q_func(state).min(dim=1)[0].item() + max(l_x, g_x)
             else:
-                v[idx] = q_func(state).min(dim=1)[0].item()
+                v[idx] = q_func(state).item()
             it.iternext()
         return xs, ys, v
 
@@ -470,7 +479,7 @@ class ZermeloKCEnv(gym.Env):
         return states, heuristic_v
 
 
-    def simulate_one_trajectory(self, q_func, T=10, state=None, keepOutOf=False, toEnd=False):
+    def simulate_one_trajectory(self, policy, T=10, state=None, keepOutOf=False, toEnd=False):
 
         if state is None:
             state = self.sample_random_state(keepOutOf=keepOutOf)
@@ -496,8 +505,8 @@ class ZermeloKCEnv(gym.Env):
                     result = 1 # succeeded
                     break
 
-            state_tensor = torch.FloatTensor(state).to(self.device).unsqueeze(0)
-            action_index = q_func(state_tensor).min(dim=1)[1].item()
+            state_tensor = torch.FloatTensor(state, device=self.device).unsqueeze(0)
+            action_index = policy.logits_net(state_tensor).max(dim=1)[1].item()
             u = self.discrete_controls[action_index]
 
             state, _ = self.integrate_forward(state, u)
@@ -533,14 +542,15 @@ class ZermeloKCEnv(gym.Env):
         return trajectories, results
 
 
-    def visualize(  self, q_func, no_show=False,
-                    vmin=-1, vmax=1, nx=81, ny=241, cmap='seismic',
-                    labels=['', ''], boolPlot=False, addBias=False):
+    def visualize(self, q_func, policy, no_show=False,
+                  vmin=-1, vmax=1, nx=81, ny=241, cmap='seismic',
+                  labels=['', ''], boolPlot=False, addBias=False):
         """ Overlays analytic safe set on top of state value function.
 
         Args:
             v: State value function.
         """
+        plt.close()
         fig, ax = plt.subplots(1, 1, figsize=(4, 4))
         axStyle = self.get_axes()
         cbarPlot = True
@@ -555,15 +565,17 @@ class ZermeloKCEnv(gym.Env):
         self.plot_v_values(q_func, ax=ax, fig=fig,
                             vmin=vmin, vmax=vmax, nx=nx, ny=ny, cmap=cmap,
                             boolPlot=boolPlot, cbarPlot=cbarPlot, addBias=addBias)
-        
+
         #== Plot Trajectories ==
-        self.plot_trajectories(q_func, states=self.visual_initial_states, toEnd=False, ax=ax)
+        self.plot_trajectories(policy, states=self.visual_initial_states,
+                               toEnd=False, ax=ax)
 
         #== Formatting ==
         self.plot_formatting(ax=ax, labels=labels)
 
-        if not no_show:
-            plt.show()
+        plt.pause(0.1)
+        # if not no_show:
+        #     plt.show()
 
 
     def plot_v_values(self, q_func, ax=None, fig=None,
