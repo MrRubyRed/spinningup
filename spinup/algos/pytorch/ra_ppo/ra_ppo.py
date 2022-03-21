@@ -74,12 +74,12 @@ class RA_PPOBuffer:
         # the next two lines implement GAE-Lambda advantage calculation
         # deltas = (rews[:-1] + self.gamma * vals[1:]) - vals[:-1]
         # self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam)
-        self.adv_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, self.gamma)#[:-1]
+        self.adv_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, self.gamma)[:-1]
         # self.adv_buf[path_slice] = core.discount_min_overtime(l_xs, self.gamma)
 
         # the next line computes rewards-to-go, to be targets for the value function
-        self.ret_buf[path_slice] = self.adv_buf[path_slice].copy()
-        # self.ret_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, 1.0)#[:-1]
+        # self.ret_buf[path_slice] = self.adv_buf[path_slice].copy()
+        self.ret_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, 1.0)[:-1]
         # self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1]
 
         self.path_start_idx = self.ptr
@@ -268,7 +268,7 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             loss_pi, pi_info = compute_loss_pi(data)
             kl = mpi_avg(pi_info['kl'])
             if kl > 1.5 * target_kl:
-                logger.log('Early stopping at step %d due to reaching max kl.'%i)
+                logger.log('Early stopping at grad step %d due to reaching max kl.'%i)
                 break
             loss_pi.backward()
             mpi_avg_grads(ac.pi)    # average grads across MPI processes
@@ -330,9 +330,11 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
                     _, v, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
                     v = max(info["g_x"], min(v, info["l_x"]))
                     # buf.finish_path(v)
+                    # print("uno")
                 else:
                     v = max(info["g_x"], info["l_x"])
                     # buf.finish_path()
+                    # print("dos", timeout, epoch_ended, info["g_x"], info["l_x"], v)
                 buf.finish_path(v)
                 if terminal:
                     # only save EpRet / EpLen if trajectory finished
@@ -363,9 +365,8 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         logger.dump_tabular()
         if epoch % 25 == 0:
             results = env.simulate_trajectories(
-                ac.pi, T=local_steps_per_epoch * 10, num_rnd_traj=100,
-                keepOutOf=False, toEnd=False)[1]
-            env.visualize(ac.v, ac.pi)  # , T=local_steps_per_epoch)
+                ac.pi, T=local_steps_per_epoch // 10, num_rnd_traj=100)[1]
+            env.visualize(ac.v, ac.pi, rndTraj=True)  # , T=local_steps_per_epoch)
             print("Percent reached = ", np.sum(results == 1))
 
 if __name__ == '__main__':
@@ -379,7 +380,7 @@ if __name__ == '__main__':
     parser.add_argument('--cpu', type=int, default=4)
     parser.add_argument('--steps', type=int, default=4000)
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--ep_len', type=int, default=150)
+    # parser.add_argument('--ep_len', type=int, default=150)
     parser.add_argument('--exp_name', type=str, default='ra_ppo')
     args = parser.parse_args()
 
@@ -387,6 +388,8 @@ if __name__ == '__main__':
 
     from spinup.utils.run_utils import setup_logger_kwargs
     logger_kwargs = setup_logger_kwargs(args.exp_name, args.seed)
+
+    # print("========== EEEFEF ============")
 
     ra_ppo(
         lambda : gym.make(args.env), actor_critic=core.MLPActorCritic,

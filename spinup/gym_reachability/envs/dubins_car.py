@@ -12,7 +12,9 @@ import numpy as np
 import gym
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 import torch
+import spinup.algos.pytorch.ra_ppo.ra_core as core
 
 
 class DubinsCarEnv(gym.Env):
@@ -33,10 +35,10 @@ class DubinsCarEnv(gym.Env):
         self.time_step = 0.05
 
         # Dubins car parameters.
-        self.speed = 0.5 # v
+        self.speed = 0.5 # 0.5 v
 
         # Control parameters.
-        self.R_turn = .6
+        self.R_turn = .6 # 0.6
         self.max_turning_rate = self.speed / self.R_turn  # w
         self.discrete = discrete
         self.discrete_controls = np.array([-self.max_turning_rate,
@@ -111,18 +113,20 @@ class DubinsCarEnv(gym.Env):
         return np.copy(self.state)
 
     def sample_random_state(self, keepOutOf=False, theta=None):
-        angle = 2.0 * np.random.uniform() * np.pi     # the position angle
-        dist = np.random.uniform(low=0, high=self.constraint_radius)
-        x_rnd = dist * np.cos(angle)
-        y_rnd = dist * np.sin(angle)
         if theta is None:
             theta_rnd = (2.0 * np.random.uniform() * np.pi) - np.pi
         else:
             theta_rnd = theta
 
+        angle = 2.0 * np.random.uniform() * np.pi     # the position angle
+        dist = self.constraint_radius * np.sqrt(np.random.uniform())
+        x_rnd = dist * np.cos(angle)
+        y_rnd = dist * np.sin(angle)
+
         return x_rnd, y_rnd, np.cos(theta_rnd), np.sin(theta_rnd)
 
 #== Dynamics Functions ==
+# Try good coverage of the state action space.
     def step(self, action):
         """ Evolve the environment one step forward under given input action.
 
@@ -146,32 +150,34 @@ class DubinsCarEnv(gym.Env):
         self.state, info = self.integrate_forward(self.state, u)
         l_x_nxt, g_x_nxt = info
 
-        # cost
-        if self.mode == 'RA':
-            fail = g_x_cur > 0
-            success = l_x_cur <= 0
-            if fail:
-                cost = self.penalty
-            elif success:
-                cost = self.reward
-            else:
-                cost = 0.
-        else:
-            fail = g_x_nxt > 0
-            success = l_x_nxt <= 0
-            if g_x_nxt > 0 or g_x_cur > 0:
-                cost = self.penalty
-            elif l_x_nxt <= 0 or l_x_cur <= 0:
-                cost = self.reward
-            else:
-                if self.costType == 'dense_ell':
-                    cost = l_x_nxt
-                elif self.costType == 'dense_ell_g':
-                    cost = l_x_nxt + g_x_nxt
-                elif self.costType == 'sparse':
-                    cost = 0. #* self.scaling
-                else:
-                    cost = 0.
+        # # cost
+        # if self.mode == 'RA':
+        #     fail = g_x_cur > 0
+        #     success = l_x_cur <= 0
+        #     if fail:
+        #         cost = self.penalty
+        #     elif success:
+        #         cost = self.reward
+        #     else:
+        #         cost = 0.
+        # else:
+        #     fail = g_x_nxt > 0
+        #     success = l_x_nxt <= 0
+        #     if g_x_nxt > 0 or g_x_cur > 0:
+        #         cost = self.penalty
+        #     elif l_x_nxt <= 0 or l_x_cur <= 0:
+        #         cost = self.reward
+        #     else:
+        #         if self.costType == 'dense_ell':
+        #             cost = l_x_nxt
+        #         elif self.costType == 'dense_ell_g':
+        #             cost = l_x_nxt + g_x_nxt
+        #         elif self.costType == 'sparse':
+        #             cost = 0. #* self.scaling
+        #         else:
+        #             cost = 0.
+        fail = g_x_cur > 0
+        success = l_x_cur <= 0
         # done
         # done = fail
         # If done flag has not triggered, just collect normal info.
@@ -179,13 +185,14 @@ class DubinsCarEnv(gym.Env):
         #     info = {"g_x": g_x_cur, "l_x": l_x_cur}
         # else:
         #     info = {"g_x": self.penalty, "l_x": l_x_cur}
-        if self.doneType == 'toEnd':
-            done = not self.check_within_bounds(self.state)
-            if (l_x_cur < 0 and (l_x_nxt - l_x_cur) > 0):
-                done = True
-        else:
-            done = fail or success
-            assert self.doneType == 'TF', 'invalid doneType'
+        # if self.doneType == 'toEnd':
+        #     done = not self.check_within_bounds(self.state)
+        #     if (l_x_cur < 0 and (l_x_nxt - l_x_cur) > 0):
+        #         done = True
+        # else:
+        # done = ((l_x_cur <= 0) and (l_x_nxt > 0)) or fail #fail #or success
+        done = fail
+        # assert self.doneType == 'TF', 'invalid doneType'
 
         info = {"g_x": g_x_cur, "l_x": l_x_cur, "g_x_nxt": g_x_nxt, "l_x_nxt": l_x_nxt}
         return np.copy(self.state), 0, done, info
@@ -229,31 +236,31 @@ class DubinsCarEnv(gym.Env):
         self.safetyScaling = safetyScaling
         self.targetScaling = targetScaling
 
-    def set_radius(self, target_radius=.3, constraint_radius=1., R_turn=.6):
-        self.target_radius = target_radius
-        self.constraint_radius = constraint_radius
-        self.R_turn = R_turn
-        self.max_turning_rate = self.speed / self.R_turn # w
-        self.discrete_controls = np.array([ -self.max_turning_rate,
-                                            0.,
-                                            self.max_turning_rate])
+    # def set_radius(self, target_radius=.3, constraint_radius=1., R_turn=.6):
+    #     self.target_radius = target_radius
+    #     self.constraint_radius = constraint_radius
+    #     self.R_turn = R_turn
+    #     self.max_turning_rate = self.speed / self.R_turn # w
+    #     self.discrete_controls = np.array([ -self.max_turning_rate,
+    #                                         0.,
+    #                                         self.max_turning_rate])
 
-    def set_constraint(self, center=np.array([0.,0.]), radius=1.):
-        self.constraint_center = center
-        self.constraint_radius = radius
+    # def set_constraint(self, center=np.array([0.,0.]), radius=1.):
+    #     self.constraint_center = center
+    #     self.constraint_radius = radius
 
-    def set_target(self, center=np.array([0.,0.]), radius=.4):
-        self.target_center = center
-        self.target_radius = radius
+    # def set_target(self, center=np.array([0.,0.]), radius=.4):
+    #     self.target_center = center
+    #     self.target_radius = radius
 
-    def set_radius_rotation(self, R_turn=.6, verbose=False):
-        self.R_turn = R_turn
-        self.max_turning_rate = self.speed / self.R_turn # w
-        self.discrete_controls = np.array([ -self.max_turning_rate,
-                                            0.,
-                                            self.max_turning_rate])
-        if verbose:
-            print(self.discrete_controls)
+    # def set_radius_rotation(self, R_turn=.6, verbose=False):
+    #     self.R_turn = R_turn
+    #     self.max_turning_rate = self.speed / self.R_turn # w
+    #     self.discrete_controls = np.array([ -self.max_turning_rate,
+    #                                         0.,
+    #                                         self.max_turning_rate])
+    #     if verbose:
+    #         print(self.discrete_controls)
 
     def set_seed(self, seed):
         """ Set the random seed.
@@ -264,23 +271,23 @@ class DubinsCarEnv(gym.Env):
         self.seed_val = seed
         np.random.seed(self.seed_val)
 
-    def set_bounds(self, bounds):
-        """ Set state bounds.
+    # def set_bounds(self, bounds):
+    #     """ Set state bounds.
 
-        Args:
-            bounds: Bounds for the state.
-        """
-        self.bounds = bounds
+    #     Args:
+    #         bounds: Bounds for the state.
+    #     """
+    #     self.bounds = bounds
 
-        # Get lower and upper bounds
-        self.low = np.array(self.bounds)[:, 0]
-        self.high = np.array(self.bounds)[:, 1]
+    #     # Get lower and upper bounds
+    #     self.low = np.array(self.bounds)[:, 0]
+    #     self.high = np.array(self.bounds)[:, 1]
 
-        # Double the range in each state dimension for Gym interface.
-        midpoint = (self.low + self.high)/2.0
-        interval = self.high - self.low
-        self.observation_space = gym.spaces.Box(np.float32(midpoint - interval/2),
-                                                np.float32(midpoint + interval/2))
+    #     # Double the range in each state dimension for Gym interface.
+    #     midpoint = (self.low + self.high)/2.0
+    #     interval = self.high - self.low
+    #     self.observation_space = gym.spaces.Box(np.float32(midpoint - interval/2),
+    #                                             np.float32(midpoint + interval/2))
 
 # == Margin Functions ==
     def _calculate_margin_rect(self, s, x_y_w_h, negativeInside=True):
@@ -417,7 +424,9 @@ class DubinsCarEnv(gym.Env):
         x, y = state[:2]
         traj_x = [x]
         traj_y = [y]
-        result = 0 # not finished
+        margin_g = []
+        margin_l = []
+        result = 0  # not finished
 
         for t in range(T):
             if toEnd:
@@ -426,11 +435,15 @@ class DubinsCarEnv(gym.Env):
                     result = 1
                     break
             else:
-                if self.safety_margin(state[:2]) > 0:
-                    result = -1 # failed
+                l = self.target_margin(state[:2])
+                g = self.safety_margin(state[:2])
+                margin_l.append(l)
+                margin_g.append(g)
+                if g > 0:
+                    result = -1  # failed
                     break
-                elif self.target_margin(state[:2]) <= 0:
-                    result = 1 # succeeded
+                elif l <= 0:
+                    result = 1  # succeeded
                     break
 
             state_tensor = torch.FloatTensor(state, device=self.device).unsqueeze(0)
@@ -444,7 +457,10 @@ class DubinsCarEnv(gym.Env):
             traj_x.append(state[0])
             traj_y.append(state[1])
 
-        return traj_x, traj_y, result
+        if len(margin_l) > 0:
+            rollout_vals = core.discount_minmax_overtime(margin_l, margin_g, 0.9999)
+
+        return traj_x, traj_y, result, rollout_vals
 
     def simulate_trajectories(self, policy, T=10, num_rnd_traj=None, states=None, theta=None, keepOutOf=False, toEnd=False):
 
@@ -452,22 +468,31 @@ class DubinsCarEnv(gym.Env):
                 (num_rnd_traj is not None and states is None) or
                 (len(states) == num_rnd_traj))
         trajectories = []
+        traj_vals = []
 
+        # plt.figure(2)
         if states is None:
             results = np.empty(shape=(num_rnd_traj,), dtype=int)
             for idx in range(num_rnd_traj):
-                traj_x, traj_y, result = self.simulate_one_trajectory(  policy, T=T, theta=theta,
+                traj_x, traj_y, result, rollout_vals = self.simulate_one_trajectory(  policy, T=T, theta=theta,
                                                                         keepOutOf=keepOutOf, toEnd=toEnd)
+                # plt.plot(traj_x, traj_y)
                 trajectories.append((traj_x, traj_y))
+                traj_vals.append(rollout_vals)
                 results[idx] = result
         else:
             results = np.empty(shape=(len(states),), dtype=int)
             for idx, state in enumerate(states):
-                traj_x, traj_y, result = self.simulate_one_trajectory(policy, T=T, state=state, toEnd=toEnd)
+                traj_x, traj_y, result, rollout_vals = self.simulate_one_trajectory(policy, T=T, state=state, toEnd=toEnd)
                 trajectories.append((traj_x, traj_y))
+                traj_vals.append(rollout_vals)
                 results[idx] = result
 
-        return trajectories, results
+        # import pdb
+        # plt.show()
+        # import pdb
+        # pdb.set_trace()
+        return trajectories, results, traj_vals
 
 # == Plotting Functions ==
     def render(self):
@@ -476,7 +501,7 @@ class DubinsCarEnv(gym.Env):
     def visualize(  self, q_func, policy, no_show=False,
                     vmin=-1, vmax=1, nx=101, ny=101, cmap='seismic',
                     labels=None, boolPlot=False, addBias=False, theta=np.pi/2,
-                    rndTraj=False, num_rnd_traj=10, keepOutOf=False):
+                    rndTraj=False, num_rnd_traj=15, keepOutOf=False):
         """ Overlays analytic safe set on top of state value function.
 
         Args:
@@ -484,7 +509,7 @@ class DubinsCarEnv(gym.Env):
         """
         plt.close()
         axStyle = self.get_axes()
-        thetaList = [np.pi/6, np.pi/3, np.pi/2]
+        thetaList = [np.pi/6, np.pi/3, np.pi/2]  # [np.pi/6, np.pi/3, np.pi/2]
         # numX = 1
         # numY = 3
         # if self.axes is None:
@@ -551,9 +576,7 @@ class DubinsCarEnv(gym.Env):
         ax.set_yticklabels([])
         #ax.set_title(r"$\theta$={:.1f}".format(theta * 180 / np.pi), fontsize=24)
 
-    def plot_v_values(  self, q_func, theta=np.pi/2, ax=None, fig=None,
-                        vmin=-1, vmax=1, nx=201, ny=201, cmap='seismic',
-                        boolPlot=False, cbarPlot=True, addBias=False):
+    def plot_v_values(  self, q_func, theta=np.pi/2, ax=None, fig=None, vmin=-1, vmax=1, nx=201, ny=201, cmap='seismic', boolPlot=False, cbarPlot=True, addBias=False):
         axStyle = self.get_axes()
         ax.plot([0., 0.], [axStyle[0][2], axStyle[0][3]], c='k')
         ax.plot([axStyle[0][0], axStyle[0][1]], [0., 0.], c='k')
@@ -591,15 +614,31 @@ class DubinsCarEnv(gym.Env):
                                  np.cos(thetatilde), np.sin(thetatilde)]))
             states = tmpStates
 
-        trajectories, results = self.simulate_trajectories( q_func, T=T, num_rnd_traj=num_rnd_traj,
-                                                            states=states, theta=theta,
-                                                            keepOutOf=keepOutOf, toEnd=toEnd)
+        trajectories, results, traj_vals = self.simulate_trajectories(
+                                    q_func, T=T, num_rnd_traj=num_rnd_traj,
+                                    states=states, theta=theta,
+                                    keepOutOf=keepOutOf, toEnd=toEnd)
+
         if ax == None:
             ax = plt.gca()
-        for traj in trajectories:
+        all_vals = np.concatenate(traj_vals)
+        norm = plt.Normalize(-1, 1) #self.target_radius, self.target_radius)  # all_vals.max())
+        for traj, vals in zip(trajectories, traj_vals):
             traj_x, traj_y = traj
-            ax.scatter(traj_x[0], traj_y[0], s=48, c=c)
-            ax.plot(traj_x, traj_y, color=c,  linewidth=lw)
+            x_ini, y_ini = traj_x[0], traj_y[0]
+            points = np.array([traj_x, traj_y]).T.reshape(-1, 1, 2)
+            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+            # norm = plt.Normalize(vals.min(), vals.max())
+            lc = LineCollection(segments, cmap='seismic', norm=norm)
+            lc.set_array(vals)
+            lc.set_linewidth(2)
+            ax.scatter(x_ini, y_ini, c='k')
+            ax.add_collection(lc)
+            # import pdb
+            # pdb.set_trace()
+            # ax.scatter(traj_x[0], traj_y[0], s=48, c=vals[0])#c=c)
+            # for x, y, c in zip(traj_x, traj_y, vals):
+            #     ax.plot(traj_x, traj_y, color=c,  linewidth=lw)
 
         return results
 

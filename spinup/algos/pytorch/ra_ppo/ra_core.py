@@ -66,7 +66,7 @@ def discount_minmax_overtime(l, g, gamma, debug=False):
     if len(l) == 1:
         return np.array(l_)
     assert ((len(l) - 2) >= 0)
-    for ii in range(len(l)-2, 0, -1):
+    for ii in range(len(l)-2, -1, -1):
         l_.insert(0,
             (1.0 - gamma) * max(l[ii], g[ii]) + gamma * max(g[ii], min(l[ii], l_[0])))
     # Check that cost functional is correctly computed for gamma = 1

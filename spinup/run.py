@@ -15,6 +15,7 @@ from textwrap import dedent
 
 
 # Example:
+# python -m spinup.run ra_ppo --hid "[32,32]" --env dubins_car-v0 --exp_name installtest --gamma 0.999 --epochs 1000
 # python -m spinup.run ra_vpg --hid "[32,32]" --env zermelo_cont-v0 --exp_name installtest --gamma 0.999
 # python -m spinup.run ra_vpg --hid "[32,32]" --env one_player_reach_avoid_lunar_lander-v0 --exp_name installtest --gamma 1 --epochs 500
 # python -m spinup.run ppo --hid "[32,32]" --env LunarLander-v2 --exp_name installtest --gamma 0.999
