@@ -41,13 +41,13 @@ class DubinsCarEnv(gym.Env):
         self.R_turn = .6 # 0.6
         self.max_turning_rate = self.speed / self.R_turn  # w
         self.discrete = discrete
-        self.discrete_controls = np.array([-self.max_turning_rate,
-                                   0.,
+        self.discrete_controls = np.array([#-self.max_turning_rate,
+                                   0., #])#,
                                    self.max_turning_rate])
         if self.discrete:
             self.action_space = gym.spaces.Discrete(self.discrete_controls.shape[0])
         else:
-            np.array([1.], dtype=np.float32)
+            # np.array([1.], dtype=np.float32)
             self.action_space = gym.spaces.Box(
                 np.array([self.discrete_controls[0]], dtype=np.float32),
                 np.array([self.discrete_controls[-1]], dtype=np.float32))
@@ -112,13 +112,13 @@ class DubinsCarEnv(gym.Env):
             self.state = start
         return np.copy(self.state)
 
-    def sample_random_state(self, keepOutOf=False, theta=None):
+    def sample_random_state(self, theta=None):
         if theta is None:
-            theta_rnd = (2.0 * np.random.uniform() * np.pi) - np.pi
+            theta_rnd = (2.0 * np.random.uniform() - 1.0) * np.pi
         else:
             theta_rnd = theta
 
-        angle = 2.0 * np.random.uniform() * np.pi     # the position angle
+        angle = (2.0 * np.random.uniform() - 1.0) * np.pi  # the position angle
         dist = self.constraint_radius * np.sqrt(np.random.uniform())
         x_rnd = dist * np.cos(angle)
         y_rnd = dist * np.sin(angle)
@@ -417,10 +417,10 @@ class DubinsCarEnv(gym.Env):
         return v
 
 # == Trajectory Functions ==
-    def simulate_one_trajectory(self, policy, T=10, state=None, theta=None, keepOutOf=False, toEnd=False):
+    def simulate_one_trajectory(self, policy, T=10, state=None, theta=None, toEnd=False):
 
         if state is None:
-            state = self.sample_random_state(keepOutOf=keepOutOf, theta=theta)
+            state = self.sample_random_state(theta=theta)
         x, y = state[:2]
         traj_x = [x]
         traj_y = [y]
@@ -462,7 +462,7 @@ class DubinsCarEnv(gym.Env):
 
         return traj_x, traj_y, result, rollout_vals
 
-    def simulate_trajectories(self, policy, T=10, num_rnd_traj=None, states=None, theta=None, keepOutOf=False, toEnd=False):
+    def simulate_trajectories(self, policy, T=10, num_rnd_traj=None, states=None, theta=None, toEnd=False):
 
         assert ((num_rnd_traj is None and states is not None) or
                 (num_rnd_traj is not None and states is None) or
@@ -475,7 +475,7 @@ class DubinsCarEnv(gym.Env):
             results = np.empty(shape=(num_rnd_traj,), dtype=int)
             for idx in range(num_rnd_traj):
                 traj_x, traj_y, result, rollout_vals = self.simulate_one_trajectory(  policy, T=T, theta=theta,
-                                                                        keepOutOf=keepOutOf, toEnd=toEnd)
+                                                                                    toEnd=toEnd)
                 # plt.plot(traj_x, traj_y)
                 trajectories.append((traj_x, traj_y))
                 traj_vals.append(rollout_vals)
@@ -501,7 +501,7 @@ class DubinsCarEnv(gym.Env):
     def visualize(  self, q_func, policy, no_show=False,
                     vmin=-1, vmax=1, nx=101, ny=101, cmap='seismic',
                     labels=None, boolPlot=False, addBias=False, theta=np.pi/2,
-                    rndTraj=False, num_rnd_traj=15, keepOutOf=False):
+                    rndTraj=False, num_rnd_traj=15):
         """ Overlays analytic safe set on top of state value function.
 
         Args:
@@ -544,13 +544,13 @@ class DubinsCarEnv(gym.Env):
 
             #== Plot Trajectories ==
             if rndTraj:
-                self.plot_trajectories( policy, T=50, num_rnd_traj=num_rnd_traj, theta=theta,
-                                        toEnd=False, keepOutOf=keepOutOf,
+                self.plot_trajectories( policy, T=100, num_rnd_traj=num_rnd_traj, theta=theta,
+                                        toEnd=False,
                                         ax=ax, c='y', lw=2, orientation=0)
             else:
                 # `visual_initial_states` are specified for theta = pi/2. Thus,
                 # we need to use "orientation = theta-pi/2"
-                self.plot_trajectories( policy, T=50, states=self.visual_initial_states, toEnd=False,
+                self.plot_trajectories( policy, T=100, states=self.visual_initial_states, toEnd=False,
                                         ax=ax, c='y', lw=2, orientation=theta-np.pi/2)
 
             ax.set_xlabel(r'$\theta={:.0f}^\circ$'.format(theta*180/np.pi), fontsize=28)
@@ -596,7 +596,7 @@ class DubinsCarEnv(gym.Env):
                 cbar.ax.set_yticklabels(labels=[vmin, 0, vmax], fontsize=24)
 
     def plot_trajectories(  self, q_func, T=10, num_rnd_traj=None, states=None, theta=None,
-                            keepOutOf=False, toEnd=False, ax=None, c='y', lw=1.5, orientation=0):
+                            toEnd=False, ax=None, c='y', lw=1.5, orientation=0):
 
         assert ((num_rnd_traj is None and states is not None) or
                 (num_rnd_traj is not None and states is None) or
@@ -617,7 +617,7 @@ class DubinsCarEnv(gym.Env):
         trajectories, results, traj_vals = self.simulate_trajectories(
                                     q_func, T=T, num_rnd_traj=num_rnd_traj,
                                     states=states, theta=theta,
-                                    keepOutOf=keepOutOf, toEnd=toEnd)
+                                    toEnd=toEnd)
 
         if ax == None:
             ax = plt.gca()

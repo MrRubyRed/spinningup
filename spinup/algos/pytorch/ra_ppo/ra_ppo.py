@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.optim import Adam
 import gym
 import time
@@ -268,7 +269,7 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             loss_pi, pi_info = compute_loss_pi(data)
             kl = mpi_avg(pi_info['kl'])
             if kl > 1.5 * target_kl:
-                logger.log('Early stopping at grad step %d due to reaching max kl.'%i)
+                logger.log('Early stopping at grad step %d - reaching max kl.'%i)
                 break
             loss_pi.backward()
             mpi_avg_grads(ac.pi)    # average grads across MPI processes
@@ -393,6 +394,6 @@ if __name__ == '__main__':
 
     ra_ppo(
         lambda : gym.make(args.env), actor_critic=core.MLPActorCritic,
-        ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), gamma=args.gamma,
+        ac_kwargs=dict(hidden_sizes=[args.hid]*args.l, activation=nn.Tanh), gamma=args.gamma,
         seed=args.seed, steps_per_epoch=args.steps, epochs=args.epochs,
         max_ep_len=args.ep_len, logger_kwargs=logger_kwargs)
