@@ -64,23 +64,26 @@ class RA_PPOBuffer:
         """
 
         path_slice = slice(self.path_start_idx, self.ptr)
-        # rews = np.append(self.rew_buf[path_slice], last_val)
-        # vals = np.append(self.val_buf[path_slice], last_val)
-        if last_val is None:
-            l_xs = np.append(self.l_x_buf[path_slice], self.l_x_buf[path_slice][-1])
-        else:
-            l_xs = np.append(self.l_x_buf[path_slice], last_val)
-        g_xs = np.append(self.g_x_buf[path_slice], self.g_x_buf[path_slice][-1])
-
+        rews = np.append(self.rew_buf[path_slice], last_val)
+        vals = np.append(self.val_buf[path_slice], last_val)
+        # if last_val is None:
+        #     l_xs = np.append(self.l_x_buf[path_slice], self.l_x_buf[path_slice][-1])
+        # else:
+        #g_xs = np.append(self.g_x_buf[path_slice], self.g_x_buf[path_slice][-1])
+        # l_xs = np.append(self.l_x_buf[path_slice], last_val)
+        # g_xs = np.append(self.g_x_buf[path_slice], last_val)
+        l_xs = self.l_x_buf[path_slice]
+        g_xs = self.g_x_buf[path_slice]
+        
         # the next two lines implement GAE-Lambda advantage calculation
         # deltas = (rews[:-1] + self.gamma * vals[1:]) - vals[:-1]
         # self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam)
-        self.adv_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, self.gamma)[:-1]
+        self.adv_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, self.gamma, v=vals[-1]) - vals[:-1]
         # self.adv_buf[path_slice] = core.discount_min_overtime(l_xs, self.gamma)
 
         # the next line computes rewards-to-go, to be targets for the value function
         # self.ret_buf[path_slice] = self.adv_buf[path_slice].copy()
-        self.ret_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, 1.0)[:-1]
+        self.ret_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, 1.0)#[:-1]
         # self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1]
 
         self.path_start_idx = self.ptr

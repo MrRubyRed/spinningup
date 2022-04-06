@@ -324,6 +324,8 @@ def vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         logger.log_tabular('KL', average_only=True)
         logger.log_tabular('Time', time.time()-start_time)
         logger.dump_tabular()
+        if epoch % 25 == 0:
+            env.visualize(ac.v, ac.pi)#, T=local_steps_per_epoch)
 
 if __name__ == '__main__':
     import argparse

@@ -45,7 +45,7 @@ def discount_cumsum(x, discount):
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 
-def discount_minmax_overtime(l, g, gamma, debug=False):
+def discount_minmax_overtime(l, g, gamma, v=None, debug=False):
     """
     magic from rllab for computing discounted cumulative sums of vectors.
 
@@ -62,7 +62,9 @@ def discount_minmax_overtime(l, g, gamma, debug=False):
          max(l2,g2)]
     """
     assert len(g) == len(l)
-    l_ = [max(l[-1], g[-1])]
+    v = l[-1] if v is None else v
+    
+    l_ = [max(g[-1], min(l[-1], v))]
     if len(l) == 1:
         return np.array(l_)
     assert ((len(l) - 2) >= 0)

@@ -44,15 +44,15 @@ def discount_cumsum(x, discount):
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 
-def discount_minmax_overtime(l, g, gamma, debug=False):
+def discount_minmax_overtime(l, g, gamma, v=None, debug=False):
     """
     magic from rllab for computing discounted cumulative sums of vectors.
 
     input:
-        vectors l, g
-        [l0, [g0,
-         l1,  g1,
-         l2]  g2]
+        vectors l, g, v
+        [l0, [g0, [v0,
+         l1,  g1,  v1,
+         l2]  g2]  v2]
 
     output:
         [ gamma * max(g1, min(l1, gamma*max(g2, min(l2, gamma*max(g3,l3))))),
@@ -60,18 +60,16 @@ def discount_minmax_overtime(l, g, gamma, debug=False):
          gamma * max(g1, min(l1, gamma*max(l2,g2))),
          max(l2,g2)]
     """
-    assert len(g) == len(l)
-    l_ = [max(l[-1], g[-1])]
+    assert len(g) == len(l) == len(v)
+    l_ = [max(g[-1], min(l[-1], v[-1]))]
     if len(l) == 1:
         return np.array(l_)
     assert ((len(l) - 2) >= 0)
-    for ii in range(len(l)-2, 0, -1):
+    for ii in range(len(l)-2, -1, -1):
         l_.insert(0,
             (1.0 - gamma) * max(l[ii], g[ii]) + gamma * max(g[ii], min(l[ii], l_[0])))
     # Check that cost functional is correctly computed for gamma = 1
     if debug:
-        import pdb
-        pdb.set_trace()
         g_ = np.copy(g)
         _l = np.copy(l)
         debug_list = []
@@ -86,8 +84,17 @@ def discount_minmax_overtime(l, g, gamma, debug=False):
             _l = _l[1:]
         print(l_)
         print(debug_list)
+        plt.clf()
+        plt.plot(l, 'g')
+        # plt.plot(debug_list, 'b')
+        plt.plot(g, 'k')
+        plt.plot(l_, 'r')
+        plt.pause(0.1)
+        import pdb
+        pdb.set_trace()
 
     return np.array(l_)
+
 
 
 def discount_min_overtime(l, gamma):

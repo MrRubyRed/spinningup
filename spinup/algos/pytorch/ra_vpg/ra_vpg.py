@@ -69,9 +69,11 @@ class RA_VPGBuffer:
         vals = np.append(self.val_buf[path_slice], last_val)
 
         # the next two lines implement GAE-Lambda advantage calculation
-        # deltas = (rews[:-1] + self.gamma * vals[1:]) - vals[:-1]
+        # max(info["g_x"], min(v, info["l_x"]))
+        # deltas = (1.0 - self.gamma) * np.maximum(l_xs[:-1], g_xs[:-1]) + self.gamma * np.maximum(
+        #             g_xs[:-1], np.minimum(l_xs[:-1], vals[1:]))
         # self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam)
-        self.adv_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, self.gamma)
+        self.adv_buf[path_slice] = core.discount_minmax_overtime(l_xs[:-1], g_xs[:-1], self.gamma)
         # self.adv_buf[path_slice] = core.discount_min_overtime(l_xs, self.gamma)
 
         # the next line computes rewards-to-go, to be targets for the value function
@@ -282,6 +284,7 @@ def ra_vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
     ep_ret = np.inf
     max_viol = -np.inf
     ep_len = 0
+    fin_traj, unfin_traj = 0, 0
 
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
@@ -314,8 +317,10 @@ def ra_vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
                 if timeout or epoch_ended:
                     _, v, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
                     v = max(info["g_x"], min(v, info["l_x"]))
+                    unfin_traj += 1
                 else:
                     v = max(info["g_x"], info["l_x"])
+                    fin_traj += 1
                 buf.finish_path(v)
                 if terminal:
                     # only save EpRet / EpLen if trajectory finished
@@ -343,6 +348,7 @@ def ra_vpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         logger.log_tabular('Entropy', average_only=True)
         logger.log_tabular('KL', average_only=True)
         logger.log_tabular('Time', time.time()-start_time)
+        logger.log_tabular('Ratio_unfinished', unfin_traj / (unfin_traj + fin_traj))
         logger.dump_tabular()
         if epoch % 50 == 0:
             env.visualize(ac.v, ac.pi)#, T=local_steps_per_epoch)

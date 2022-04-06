@@ -41,8 +41,8 @@ class DubinsCarEnv(gym.Env):
         self.R_turn = .6 # 0.6
         self.max_turning_rate = self.speed / self.R_turn  # w
         self.discrete = discrete
-        self.discrete_controls = np.array([#-self.max_turning_rate,
-                                   0., #])#,
+        self.discrete_controls = np.array([-self.max_turning_rate,
+                                   0.,
                                    self.max_turning_rate])
         if self.discrete:
             self.action_space = gym.spaces.Discrete(self.discrete_controls.shape[0])
@@ -178,6 +178,7 @@ class DubinsCarEnv(gym.Env):
         #             cost = 0.
         fail = g_x_cur > 0
         success = l_x_cur <= 0
+        reward = 1.0 * success - 5.0 * fail
         # done
         # done = fail
         # If done flag has not triggered, just collect normal info.
@@ -195,7 +196,7 @@ class DubinsCarEnv(gym.Env):
         # assert self.doneType == 'TF', 'invalid doneType'
 
         info = {"g_x": g_x_cur, "l_x": l_x_cur, "g_x_nxt": g_x_nxt, "l_x_nxt": l_x_nxt}
-        return np.copy(self.state), 0, done, info
+        return np.copy(self.state), reward, done, info
 
     def integrate_forward(self, state, u):
         """ Integrate the dynamics forward by one step.
@@ -509,7 +510,7 @@ class DubinsCarEnv(gym.Env):
         """
         plt.close()
         axStyle = self.get_axes()
-        thetaList = [np.pi/6, np.pi/3, np.pi/2]  # [np.pi/6, np.pi/3, np.pi/2]
+        thetaList = [0, np.pi/2, np.pi]  # [np.pi/6, np.pi/3, np.pi/2]
         # numX = 1
         # numY = 3
         # if self.axes is None:
