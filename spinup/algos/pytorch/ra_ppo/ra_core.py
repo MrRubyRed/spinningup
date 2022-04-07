@@ -63,8 +63,9 @@ def discount_minmax_overtime(l, g, gamma, v=None, debug=False):
     """
     assert len(g) == len(l)
     v = l[-1] if v is None else v
-    
-    l_ = [max(g[-1], min(l[-1], v))]
+
+    l_ = [(1.0 - gamma) * max(g[-1], l[-1])
+          + gamma * max(g[-1], min(l[-1], v))]
     if len(l) == 1:
         return np.array(l_)
     assert ((len(l) - 2) >= 0)

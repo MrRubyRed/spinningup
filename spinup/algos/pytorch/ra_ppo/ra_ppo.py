@@ -74,7 +74,7 @@ class RA_PPOBuffer:
         # g_xs = np.append(self.g_x_buf[path_slice], last_val)
         l_xs = self.l_x_buf[path_slice]
         g_xs = self.g_x_buf[path_slice]
-        
+
         # the next two lines implement GAE-Lambda advantage calculation
         # deltas = (rews[:-1] + self.gamma * vals[1:]) - vals[:-1]
         # self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam)
@@ -83,7 +83,7 @@ class RA_PPOBuffer:
 
         # the next line computes rewards-to-go, to be targets for the value function
         # self.ret_buf[path_slice] = self.adv_buf[path_slice].copy()
-        self.ret_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, 1.0)#[:-1]
+        self.ret_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, 1.0, v=vals[-1])#[:-1]
         # self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1]
 
         self.path_start_idx = self.ptr
