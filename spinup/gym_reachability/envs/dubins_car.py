@@ -545,13 +545,13 @@ class DubinsCarEnv(gym.Env):
 
             #== Plot Trajectories ==
             if rndTraj:
-                self.plot_trajectories( policy, T=100, num_rnd_traj=num_rnd_traj, theta=theta,
+                self.plot_trajectories( policy, T=300, num_rnd_traj=num_rnd_traj, theta=theta,
                                         toEnd=False,
                                         ax=ax, c='y', lw=2, orientation=0)
             else:
                 # `visual_initial_states` are specified for theta = pi/2. Thus,
                 # we need to use "orientation = theta-pi/2"
-                self.plot_trajectories( policy, T=100, states=self.visual_initial_states, toEnd=False,
+                self.plot_trajectories( policy, T=300, states=self.visual_initial_states, toEnd=False,
                                         ax=ax, c='y', lw=2, orientation=theta-np.pi/2)
 
             ax.set_xlabel(r'$\theta={:.0f}^\circ$'.format(theta*180/np.pi), fontsize=28)

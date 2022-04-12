@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.optim import Adam
+from torch.optim import Adam, RMSprop
 import gym
 import time
 import spinup.algos.pytorch.ra_ppo.ra_core as core
@@ -253,8 +253,10 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         return ((ac.v(obs) - ret)**2).mean()
 
     # Set up optimizers for policy and value function
-    pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
-    vf_optimizer = Adam(ac.v.parameters(), lr=vf_lr)
+    # pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
+    # vf_optimizer = Adam(ac.v.parameters(), lr=vf_lr)
+    pi_optimizer = RMSprop(ac.pi.parameters(), lr=pi_lr)
+    vf_optimizer = RMSprop(ac.v.parameters(), lr=vf_lr)
 
     # Set up model saving
     logger.setup_pytorch_saver(ac)
@@ -370,7 +372,7 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         if epoch % 25 == 0:
             results = env.simulate_trajectories(
                 ac.pi, T=local_steps_per_epoch // 10, num_rnd_traj=100)[1]
-            env.visualize(ac.v, ac.pi, rndTraj=True)  # , T=local_steps_per_epoch)
+            env.visualize(ac.v, ac.pi)#, rndTraj=True)  # , T=local_steps_per_epoch)
             print("Percent reached = ", np.sum(results == 1))
 
 if __name__ == '__main__':
