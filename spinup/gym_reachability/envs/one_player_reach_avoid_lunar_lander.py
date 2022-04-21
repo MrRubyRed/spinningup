@@ -44,7 +44,7 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
                  target_type='default',
                  doneType='toFailureOrSuccess',
                  obstacle_sampling=False,
-                 discrete=False):
+                 discrete=True):
 
         self.parent_init = False
         super(OnePlayerReachAvoidLunarLander, self).__init__(
@@ -85,15 +85,15 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
         self.hover_max_y = self.HELIPAD_Y + 2  # on calc in parent reset()
 
         # Visualization params
-        self.img_data = None
-        self.scaling_factor = 3.0
-        self.slices_y = np.array([1, 0, -1]) * self.scaling_factor
-        self.slices_x = np.array([-1, 0, 1]) * self.scaling_factor
-        self.vis_init_flag = True
-        self.visual_initial_states = [
-            np.array([self.midpoint_x + self.width_x/4,
-                      self.midpoint_y + self.width_y/4,
-                      0, 0, 0, 0])]
+        # self.img_data = None
+        # self.scaling_factor = 3.0
+        # self.slices_y = np.array([1, 0, -1]) * self.scaling_factor
+        # self.slices_x = np.array([-1, 0, 1]) * self.scaling_factor
+        # self.vis_init_flag = True
+        # self.visual_initial_states = [
+        #     np.array([self.midpoint_x + self.width_x/4,
+        #               self.midpoint_y + self.width_y/4,
+        #               0, 0, 0, 0])]
 
         self.polygon_target = [
             (self.helipad_x1, self.HELIPAD_Y),
@@ -118,7 +118,9 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
         self.visual_initial_states = [
             np.array([self.midpoint_x + self.width_x/4,
                       self.midpoint_y + self.width_y/4,
-                      0, 0, 0, 0])]
+                      0, 0, 0, 0], dtype=np.float64)] # In sim scale.
+        # self.visual_initial_states = [self.simulator_scale_to_obs_scale(
+        #     self.visual_initial_states[0])]
 
         if mode == 'extend':
             self.visual_initial_states = self.extend_state(
@@ -144,8 +146,8 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
         L2_distance = self.target_xy_polygon.exterior.distance(p)
         inside = 2*self.target_xy_polygon.contains(p) - 1
         vel_l = speed - self.vy_bound/10.0
-        return max(-inside*L2_distance, vel_l)
-        # return -inside*L2_distance
+        # return max(-inside*L2_distance, vel_l)
+        return -inside*L2_distance
 
     def safety_margin(self, state):
         # States come in sim_space.
@@ -197,12 +199,17 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
 
             state_tensor = torch.FloatTensor(state).to(self.device).unsqueeze(0)
             if self.discrete:
-                action = policy(state_tensor).min(dim=1)[1].item()
-                if initial_q is None:
-                    initial_q = policy(state_tensor).min(dim=1)[0].item()
+                # action = policy(state_tensor).min(dim=1)[1].item()
+                # import pdb
+                # pdb.set_trace()
+                action = policy.logits_net(state_tensor).max(dim=1)[1].item()
+                # action = self.total_act_dim[action_index]
+                # if initial_q is None:
+                #     initial_q = policy(state_tensor).min(dim=1)[0].item()
             else:
-                action = policy(state_tensor).cpu().detach().numpy()[0]
-            assert isinstance(action, np.ndarray), "Not numpy array for action!"
+                # action = policy(state_tensor).cpu().detach().numpy()[0]
+                action = policy.mu_net(state_tensor).detach()
+                # assert isinstance(action, np.ndarray), "Not numpy array for action!"
 
             if s_margin > 0:
                 result = -1  # Failed.
@@ -261,7 +268,7 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
         if ax == None:
             ax=plt.gca()
         trajectories, results = self.simulate_trajectories(
-            q_func, T=T, num_rnd_traj=num_rnd_traj, states=states)
+            policy, T=T, num_rnd_traj=num_rnd_traj, states=states)
         for traj in trajectories:
             traj_x, traj_y = traj
             ax.scatter(traj_x[0], traj_y[0], s=24, c=c)
@@ -303,19 +310,22 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
                 state = torch.FloatTensor(
                     [x, y, x_dot, y_dot, theta, theta_dot, z]).to(self.device)
 
-            if self.discrete:
-                if policy is None:
-                    v[idx] = q_func(state).min(dim=1)[0].item()
-                else:
-                    q_vals = q_func(state)
-                    action = policy(state).max(dim=1)[0]  # Pick the action from softmax.
-                    v[idx] = q_vals[action].item()
-            else:
-                # Need to have an actor when actions are continuous.
-                assert policy is not None, "Need actor-policy for continuous actions."
-                action = policy.mu_net(state).to(self.device)
-                xx = torch.cat([state, action.detach()]).to(self.device)
-                v[idx] = q_func(state).item()
+            # if self.discrete:
+            #     if policy is None:
+            #         v[idx] = q_func(state).min(dim=1)[0].item()
+            #     else:
+            #         # q_vals = q_func(state)
+            #         # import pdb
+            #         # pdb.set_trace()
+            #         # action = policy.logits_net(state).max(dim=1)[1].item()
+            #         # action = policy(state).max(dim=1)[0]  # Pick the action from softmax.
+            #         v[idx] = q_func(state).item()
+            # else:
+            #     # Need to have an actor when actions are continuous.
+            #     # assert policy is not None, "Need actor-policy for continuous actions."
+            #     # action = policy.mu_net(state).to(self.device)
+            #     # xx = torch.cat([state, action.detach()]).to(self.device)
+            v[idx] = q_func(state).item()
             # v[idx] = max(g_x, min(l_x, v[idx]))
             it.iternext()
         # print("End value collection on grid.")
@@ -429,7 +439,7 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
                 self.imshow_lander(extent=axStyle[0], alpha=0.4, ax=ax)
 
 
-                # _ = self.plot_trajectories( q_func, T=100, states=self.visual_initial_states, ax=ax)
+                _ = self.plot_trajectories(policy, T=100, states=self.visual_initial_states, ax=ax)
 
                 ax.axis(axStyle[0])
                 ax.grid(False)
@@ -511,7 +521,8 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
                 obs = self.simulator_scale_to_obs_scale(s)
 
                 state_tensor = torch.FloatTensor(obs).to(self.device).unsqueeze(0)
-                action_index = q_func(state_tensor).min(dim=1)[1].item()
+                action_index = q_func.logits_net(state_tensor).max(dim=1)[1].item()
+                # action_index = q_func(state_tensor).min(dim=1)[1].item()
                 # action_index = q_func(state_tensor).sort()[1][0, 1].item()
 
                 if action_index == 0:   # Nothing

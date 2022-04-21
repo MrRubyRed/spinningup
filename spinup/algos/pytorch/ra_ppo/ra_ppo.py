@@ -4,6 +4,7 @@ import torch.nn as nn
 from torch.optim import Adam, RMSprop
 import gym
 import time
+import matplotlib.pyplot as plt
 import spinup.algos.pytorch.ra_ppo.ra_core as core
 from spinup.utils.logx import EpochLogger
 from spinup.utils.mpi_pytorch import setup_pytorch_for_mpi, sync_params, mpi_avg_grads
@@ -274,6 +275,7 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             loss_pi, pi_info = compute_loss_pi(data)
             kl = mpi_avg(pi_info['kl'])
             if kl > 1.5 * target_kl:
+                print("KL = ", kl, " | Target_KL = ", target_kl)
                 logger.log('Early stopping at grad step %d - reaching max kl.'%i)
                 break
             loss_pi.backward()
@@ -374,6 +376,37 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
                 ac.pi, T=local_steps_per_epoch // 10, num_rnd_traj=100)[1]
             env.visualize(ac.v, ac.pi)#, rndTraj=True)  # , T=local_steps_per_epoch)
             print("Percent reached = ", np.sum(results == 1))
+
+            # # Show policy in velocity 0 space.
+            # env.scatter_actions(ac.pi, num_states=200)
+            # plt.show()
+
+            print(ac.pi.logits_net[0].weight[:6])
+
+            # my_images = []
+            # # fig, ax = plt.subplots(figsize=(12, 7))
+            # s_trajs = []
+            # total_reward = 0
+            # o = env.reset(state_in=env.visual_initial_states[0])
+            # tmp_int = 0
+            # tmp_ii = 0
+            # while True:
+            #     action, _, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
+            #     s, r, done, info = env.step(action)
+            #     s_trajs.append([s[0], s[1]])
+            #     total_reward += r
+            #     tmp_ii += 1
+
+            #     my_images.append(env.render(mode="rgb_array"))
+
+            #     if done or tmp_ii > 1000:
+            #       tmp_ii = 0
+            #       # o = env.reset()
+            #       o = env.reset(state_in=env.visual_initial_states[0])
+            #       if tmp_int > 20:
+            #         break
+            #       else:
+            #         tmp_int += 1
 
 if __name__ == '__main__':
     import argparse

@@ -652,7 +652,9 @@ class MultiPlayerLunarLanderReachability(gym.Env, EzPickle):
             done_list.append(done_ii)
             info_list.append(info_ii)
         self.world.Step(1.0/self.FPS, 6*30, 2*30)
+        # Obs state used for training NN.
         self.obs_state = np.concatenate(state_list)
+        # Sim state used for l_x and g_x.
         self.sim_state = self.obs_scale_to_simulator_scale(self.obs_state)
 
         self.l_x = self.target_margin(self.sim_state)
@@ -683,10 +685,11 @@ class MultiPlayerLunarLanderReachability(gym.Env, EzPickle):
         #     assert False, "Not implemented yet!"
 
         # If done flag has not triggered, just collect normal info.
-        if not done:
-            info = {"g_x": self.g_x, "l_x": self.l_x}
-        else:
-            info = {"g_x": self.penalty, "l_x": self.l_x}  
+        # if not done:
+        #     info = {"g_x": self.g_x, "l_x": self.l_x}
+        # else:
+        #     info = {"g_x": self.g_x, "l_x": self.l_x}
+        info = {"g_x": self.g_x, "l_x": self.l_x}
 
         return np.copy(self.obs_state), 0, done, info
 
