@@ -196,8 +196,10 @@ class MLPActorCritic(nn.Module):
 
         # policy builder depends on action space
         if isinstance(action_space, Box):
+            print("Creating CONTINUOUS Policy")
             self.pi = MLPGaussianActor(obs_dim, action_space.shape[0], hidden_sizes, activation)
         elif isinstance(action_space, Discrete):
+            print("Creating DISCRETE Policy")
             self.pi = MLPCategoricalActor(obs_dim, action_space.n, hidden_sizes, activation)
 
         # build value function

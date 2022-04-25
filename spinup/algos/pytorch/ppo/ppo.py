@@ -352,8 +352,39 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         logger.log_tabular('StopIter', average_only=True)
         logger.log_tabular('Time', time.time()-start_time)
         logger.dump_tabular()
-        if epoch % 50 == 0:
-            env.visualize(ac.v, ac.pi)#, T=local_steps_per_epoch)
+        if epoch % 25 == 0:
+            # env.visualize(ac.v, ac.pi)#, T=local_steps_per_epoch)
+
+            print(ac.pi.logits_net[0].weight[:6])
+
+            my_images = []
+            # fig, ax = plt.subplots(figsize=(12, 7))
+            s_trajs = []
+            total_reward = 0
+            o = env.reset(state_in=env.visual_initial_states[0])
+            tmp_int = 0
+            tmp_ii = 0
+            while True:
+                action, _, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
+                s, r, done, info = env.step(action)
+                state_sim = env.obs_scale_to_simulator_scale(s)
+                s_margin = env.safety_margin(state_sim)
+                t_margin = env.target_margin(state_sim)
+                print("S_Margin: ", s_margin, " | T_Margin: ", t_margin, " | reward: ", r)
+                s_trajs.append([s[0], s[1]])
+                total_reward += r
+                tmp_ii += 1
+
+                my_images.append(env.render(mode="rgb_array"))
+
+                if done or tmp_ii > 1000:
+                  tmp_ii = 0
+                  # o = env.reset()
+                  o = env.reset(state_in=env.visual_initial_states[0])
+                  if tmp_int > 3:
+                    break
+                  else:
+                    tmp_int += 1
 
 if __name__ == '__main__':
     import argparse

@@ -254,10 +254,10 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         return ((ac.v(obs) - ret)**2).mean()
 
     # Set up optimizers for policy and value function
-    # pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
-    # vf_optimizer = Adam(ac.v.parameters(), lr=vf_lr)
-    pi_optimizer = RMSprop(ac.pi.parameters(), lr=pi_lr)
-    vf_optimizer = RMSprop(ac.v.parameters(), lr=vf_lr)
+    pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
+    vf_optimizer = Adam(ac.v.parameters(), lr=vf_lr)
+    # pi_optimizer = RMSprop(ac.pi.parameters(), lr=pi_lr)
+    # vf_optimizer = RMSprop(ac.v.parameters(), lr=vf_lr)
 
     # Set up model saving
     logger.setup_pytorch_saver(ac)
@@ -274,10 +274,10 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             pi_optimizer.zero_grad()
             loss_pi, pi_info = compute_loss_pi(data)
             kl = mpi_avg(pi_info['kl'])
-            if kl > 1.5 * target_kl:
-                print("KL = ", kl, " | Target_KL = ", target_kl)
-                logger.log('Early stopping at grad step %d - reaching max kl.'%i)
-                break
+            # if kl > 1.5 * target_kl:
+            #     print("KL = ", kl, " | Target_KL = ", target_kl)
+            #     logger.log('Early stopping at grad step %d - reaching max kl.'%i)
+            #     break
             loss_pi.backward()
             mpi_avg_grads(ac.pi)    # average grads across MPI processes
             pi_optimizer.step()
@@ -372,10 +372,10 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         logger.log_tabular('Time', time.time()-start_time)
         logger.dump_tabular()
         if epoch % 25 == 0:
-            results = env.simulate_trajectories(
-                ac.pi, T=local_steps_per_epoch // 10, num_rnd_traj=100)[1]
-            env.visualize(ac.v, ac.pi)#, rndTraj=True)  # , T=local_steps_per_epoch)
-            print("Percent reached = ", np.sum(results == 1))
+            # results = env.simulate_trajectories(
+            #     ac.pi, T=local_steps_per_epoch // 10, num_rnd_traj=100)[1]
+            # env.visualize(ac.v, ac.pi)#, rndTraj=True)  # , T=local_steps_per_epoch)
+            # print("Percent reached = ", np.sum(results == 1))
 
             # # Show policy in velocity 0 space.
             # env.scatter_actions(ac.pi, num_states=200)
@@ -383,30 +383,34 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
 
             print(ac.pi.logits_net[0].weight[:6])
 
-            # my_images = []
-            # # fig, ax = plt.subplots(figsize=(12, 7))
-            # s_trajs = []
-            # total_reward = 0
-            # o = env.reset(state_in=env.visual_initial_states[0])
-            # tmp_int = 0
-            # tmp_ii = 0
-            # while True:
-            #     action, _, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
-            #     s, r, done, info = env.step(action)
-            #     s_trajs.append([s[0], s[1]])
-            #     total_reward += r
-            #     tmp_ii += 1
+            my_images = []
+            # fig, ax = plt.subplots(figsize=(12, 7))
+            s_trajs = []
+            total_reward = 0
+            o = env.reset(state_in=env.visual_initial_states[0])
+            tmp_int = 0
+            tmp_ii = 0
+            while True:
+                action, _, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
+                s, r, done, info = env.step(action)
+                state_sim = env.obs_scale_to_simulator_scale(s)
+                s_margin = env.safety_margin(state_sim)
+                t_margin = env.target_margin(state_sim)
+                print("S_Margin: ", s_margin, " | T_Margin: ", t_margin)
+                s_trajs.append([s[0], s[1]])
+                total_reward += r
+                tmp_ii += 1
 
-            #     my_images.append(env.render(mode="rgb_array"))
+                my_images.append(env.render(mode="rgb_array"))
 
-            #     if done or tmp_ii > 1000:
-            #       tmp_ii = 0
-            #       # o = env.reset()
-            #       o = env.reset(state_in=env.visual_initial_states[0])
-            #       if tmp_int > 20:
-            #         break
-            #       else:
-            #         tmp_int += 1
+                if done or tmp_ii > 1000:
+                  tmp_ii = 0
+                  # o = env.reset()
+                  o = env.reset(state_in=env.visual_initial_states[0])
+                  if tmp_int > 1:
+                    break
+                  else:
+                    tmp_int += 1
 
 if __name__ == '__main__':
     import argparse

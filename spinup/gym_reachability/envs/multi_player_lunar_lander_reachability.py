@@ -664,6 +664,10 @@ class MultiPlayerLunarLanderReachability(gym.Env, EzPickle):
         success = self.l_x <= 0
         done = fail or np.any(done_list)  # Outside enclosure or collision.
 
+        vx = self.obs_state[2]
+        vy = self.obs_state[3]
+        speed = np.sqrt(vx**2 + vy**2)
+        reward = 0 - speed #1.0 * success - 5.0 * fail
         # done = False
         # if self.doneType is 'toFailureOrSuccess':
         #     if fail:
@@ -691,7 +695,7 @@ class MultiPlayerLunarLanderReachability(gym.Env, EzPickle):
         #     info = {"g_x": self.g_x, "l_x": self.l_x}
         info = {"g_x": self.g_x, "l_x": self.l_x}
 
-        return np.copy(self.obs_state), 0, done, info
+        return np.copy(self.obs_state), reward, done, info
 
     def _create_particle(self, mass, x, y, ttl):
         p = self.world.CreateDynamicBody(
