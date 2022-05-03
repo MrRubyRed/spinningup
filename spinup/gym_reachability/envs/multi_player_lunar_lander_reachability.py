@@ -666,8 +666,8 @@ class MultiPlayerLunarLanderReachability(gym.Env, EzPickle):
 
         vx = self.obs_state[2]
         vy = self.obs_state[3]
-        speed = np.sqrt(vx**2 + vy**2)
-        reward = 0 - speed #1.0 * success - 5.0 * fail
+        reward = -np.sqrt(vx**2 + vy**2)
+        # reward = 1.0 * success - 5.0 * fail
         # done = False
         # if self.doneType is 'toFailureOrSuccess':
         #     if fail:

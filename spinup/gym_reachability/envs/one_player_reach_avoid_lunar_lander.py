@@ -126,9 +126,9 @@ class OnePlayerReachAvoidLunarLander(MultiPlayerLunarLanderReachability):
             self.visual_initial_states = self.extend_state(
                 self.visual_initial_states)
 
-    def reset(self, state_in=None, terrain_polyline=None):
+    def reset(self, state_in=None, terrain_polyline=None, zero_vel=False):
         return super().reset(
-            state_in=state_in, terrain_polyline=terrain_polyline)
+            state_in=state_in, terrain_polyline=terrain_polyline, zero_vel=zero_vel)
 
     def step(self, action):
         return super().step(action)

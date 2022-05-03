@@ -1,84 +1,211 @@
-# Copyright (c) 2019–2020, The Regents of the University of California.
-# All rights reserved.
-#
-# This file is subject to the terms and conditions defined in the LICENSE file
-# included in this repository.
-#
-# Please contact the author(s) of this library if you have any questions.
-# Authors: Vicenc Rubies Royo ( vrubies@berkeley.edu )
-#          Neil Lugovoy   ( nflugovoy@berkeley.edu )
-
+import sys, math
 import numpy as np
+
+import Box2D
+from Box2D.b2 import (edgeShape, circleShape, fixtureDef, polygonShape, revoluteJointDef, contactListener)
+
 import gym
 from gym import spaces
-from gym.envs.box2d.lunar_lander import LunarLander
-from gym.envs.box2d.lunar_lander import SCALE, VIEWPORT_W, VIEWPORT_H, LEG_DOWN, FPS, LEG_AWAY, \
-    LANDER_POLY, LEG_H, LEG_W
-from Box2D.b2 import edgeShape
-# NOTE the overrides cause crashes with ray in this file but I would like to include them for
-# clarity in the future
-#from ray.rllib.utils.annotations import override
+from gym.utils import seeding, EzPickle
+import pyglet
+
 import matplotlib.pyplot as plt
 import torch
-from shapely.geometry import Polygon, Point
 import random
+from shapely.geometry import Polygon, Point
 from shapely.affinity import affine_transform
 from shapely.ops import triangulate
 
-# these variables are needed to do calculations involving the terrain but are local variables
-# in LunarLander reset() unfortunately
+# Rocket trajectory optimization is a classic topic in Optimal Control.
+#
+# According to Pontryagin's maximum principle it's optimal to fire engine full throttle or
+# turn it off. That's the reason this environment is OK to have discreet actions (engine on or off).
+#
+# Landing pad is always at coordinates (0,0). Coordinates are the first two numbers in state vector.
+# Reward for moving from the top of the screen to landing pad and zero speed is about 100..140 points.
+# If lander moves away from landing pad it loses reward back. Episode finishes if the lander crashes or
+# comes to rest, receiving additional -100 or +100 points. Each leg ground contact is +10. Firing main
+# engine is -0.3 points each frame. Firing side engine is -0.03 points each frame. Solved is 200 points.
+#
+# Landing outside landing pad is possible. Fuel is infinite, so an agent can learn to fly and then land
+# on its first attempt. Please see source code for details.
+#
+# To see heuristic landing, run:
+#
+# python gym/envs/box2d/lunar_lander.py
+#
+# To play yourself, run:
+#
+# python examples/agents/keyboard_agent.py LunarLander-v2
+#
+# Created by Oleg Klimov. Licensed on the same terms as the rest of OpenAI Gym.
 
-W = VIEWPORT_W / SCALE
-H = VIEWPORT_H / SCALE
-CHUNKS = 17 #11  # number of polygons used to make the lunar surface
-HELIPAD_Y = (VIEWPORT_H / SCALE) / 2  # height of helipad in simulator scale
+FPS    = 50
+SCALE  = 30.0   # affects how fast-paced the game is, forces should be adjusted as well
 
-# height of lander body in simulator scale. LANDER_POLY has the (x,y) points that define the
-# shape of the lander in pixel scale
-LANDER_POLY_X = np.array(LANDER_POLY)[:, 0]
-LANDER_POLY_Y = np.array(LANDER_POLY)[:, 1]
+MAIN_ENGINE_POWER  = 13.0
+SIDE_ENGINE_POWER  =  0.6
 
-LANDER_W = (np.max(LANDER_POLY_X) - np.min(LANDER_POLY_X)) / SCALE
-LANDER_H = (np.max(LANDER_POLY_Y) - np.min(LANDER_POLY_Y)) / SCALE
+INITIAL_RANDOM = 1000.0   # Set 1500 to make game harder
 
-# distance of edge of legs from center of lander body in simulator scale
-LEG_X_DIST = LEG_AWAY / SCALE
-LEG_Y_DIST = LEG_DOWN / SCALE
+LANDER_POLY =[
+    (-14,+17), (-17,0), (-17,-10),
+    (+17,-10), (+17,0), (+14,+17)
+    ]
+LEG_AWAY = 20
+LEG_DOWN = 18
+LEG_W, LEG_H = 2, 8
+LEG_SPRING_TORQUE = 40
 
-# radius around lander to check for collisions
-LANDER_RADIUS = ((LANDER_H / 2 + LEG_Y_DIST + LEG_H / SCALE) ** 2 +
-                 (LANDER_W / 2 + LEG_X_DIST + LEG_W / SCALE) ** 2) ** 0.5
+SIDE_ENGINE_HEIGHT = 14.0
+SIDE_ENGINE_AWAY   = 12.0
 
+VIEWPORT_W = 600
+VIEWPORT_H = 400
 
-class LunarLanderReachability(LunarLander):
+class ContactDetector(contactListener):
+    def __init__(self, env):
+        contactListener.__init__(self)
+        self.env = env
+    def BeginContact(self, contact):
+        if self.env.lander==contact.fixtureA.body or self.env.lander==contact.fixtureB.body:
+            self.env.game_over = True
+        for i in range(2):
+            if self.env.legs[i] in [contact.fixtureA.body, contact.fixtureB.body]:
+                self.env.legs[i].ground_contact = True
+    def EndContact(self, contact):
+        for i in range(2):
+            if self.env.legs[i] in [contact.fixtureA.body, contact.fixtureB.body]:
+                self.env.legs[i].ground_contact = False
 
-    # in the LunarLander environment the variables LANDER_POLY, LEG_AWAY, LEG_DOWN, LEG_W, LEG_H
-    # SIDE_ENGINE_HEIGHT, SIDE_ENGINE_AWAY, VIEWPORT_W and VIEWPORT_H are measured in pixels
-    #
-    # the x and y coordinates (and their time derivatives) used for physics calculations in the
-    # simulator use those values scaled by 1 / SCALE
-    #
-    # the observations sent to the learning algorithm when reset() or step() is called use those
-    # values scaled by SCALE / (2 * VIEWPORT_H) and SCALE / (2 * VIEWPORT_Y) and centered at
-    # (2 * VIEWPORT_W) / SCALE and HELIPAD_Y + LEG_DOWN / SCALE for x and y respectively
-    # theta_dot is scaled by 20.0 / FPS
-    #
-    # this makes reading the lunar_lander.py file difficult so I have tried to make clear what scale
-    # is being used here by calling them: pixel scale, simulator scale, and observation scale
+class LunarLanderReachability(gym.Env, EzPickle):
+    metadata = {
+        'render.modes': ['human', 'rgb_array'],
+        'video.frames_per_second' : FPS
+    }
 
-    def __init__(self, device=torch.device("cpu"), mode='normal', doneType='toEnd'):
+    continuous = False
 
-        # in LunarLander init() calls reset() which calls step() so some variables need
-        # to be set up before calling init() to prevent problems from variables not being defined
+    def __init__(self):
+        EzPickle.__init__(self)
+        self.seed()
+        self.viewer = None
 
-        self.before_parent_init = True
+        self.world = Box2D.b2World()
+        self.moon = None
+        self.lander = None
+        self.particles = []
 
-        self.chunk_x = [W/(CHUNKS-1)*i for i in range(CHUNKS)]
-        self.helipad_x1 = self.chunk_x[CHUNKS//2-1]
-        self.helipad_x2 = self.chunk_x[CHUNKS//2+1]
-        self.helipad_y = HELIPAD_Y
+        self.prev_reward = None
 
-        # safety problem limits in --> simulator scale <--
+        # useful range is -1 .. +1, but spikes can be higher
+        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(8,), dtype=np.float32)
+
+        if self.continuous:
+            # Action is two floats [main engine, left-right engines].
+            # Main engine: -1..0 off, 0..+1 throttle from 50% to 100% power. Engine can't work with less than 50% power.
+            # Left-right:  -1.0..-0.5 fire left engine, +0.5..+1.0 fire right engine, -0.5..0.5 off
+            self.action_space = spaces.Box(-1, +1, (2,), dtype=np.float32)
+        else:
+            # Nop, fire left engine, main engine, right engine
+            self.action_space = spaces.Discrete(4)
+
+        self.param_dict = self._generate_param_dict({})
+        self.initialize_simulator_variables(self.param_dict)
+        self.bounds_simulation_one_player = np.array([
+            [0, self.W],
+            [0, self.H],
+            [-self.vx_bound, self.vx_bound],
+            [-self.vy_bound, self.vy_bound],
+            [-self.theta_bound, self.theta_bound],
+            [-self.theta_dot_bound, self.theta_dot_bound]])
+
+        self.reset()
+
+    def _generate_param_dict(self, input_dict):
+        param_dict = {}
+
+        param_dict["FPS"] = 50
+        param_dict["SCALE"] = 30.0
+        param_dict["MAIN_ENGINE_POWER"] = 13.0
+        param_dict["SIDE_ENGINE_POWER"] = 0.6
+        param_dict["LANDER_POLY"] = [
+            (-14, +17), (-17, 0), (-17, -10),
+            (+17, -10), (+17, 0), (+14, +17)
+            ]
+        param_dict["LEG_AWAY"] = 20
+        param_dict["LEG_DOWN"] = 18
+        param_dict["LEG_W"] = 2
+        param_dict["LEG_H"] = 8
+        param_dict["LEG_SPRING_TORQUE"] = 40
+        param_dict["SIDE_ENGINE_HEIGHT"] = 14.0
+        param_dict["SIDE_ENGINE_AWAY"] = 12.0
+        param_dict["VIEWPORT_W"] = 600
+        param_dict["VIEWPORT_H"] = 400
+        param_dict["CHUNKS"] = 17
+        param_dict["INITIAL_RANDOM"] = 1000.0
+        param_dict["LIDAR_RANGE"] = 500
+
+        param_dict["vx_bound"] = 10
+        param_dict["vy_bound"] = 10
+        param_dict["theta_bound"] = np.radians(45)
+        param_dict["theta_dot_bound"] = np.radians(10)
+
+        for key, value in input_dict:
+            param_dict[key] = value
+        return param_dict
+
+    def initialize_simulator_variables(self, param_dict):
+        self.FPS = param_dict["FPS"]
+        self.SCALE = param_dict["SCALE"]   # affects how fast-paced the game is, forces should be adjusted as well
+        self.MAIN_ENGINE_POWER = param_dict["MAIN_ENGINE_POWER"]
+        self.SIDE_ENGINE_POWER = param_dict["SIDE_ENGINE_POWER"]
+        self.LANDER_POLY = param_dict["LANDER_POLY"]
+        self.LEG_AWAY = param_dict["LEG_AWAY"]
+        self.LEG_DOWN = param_dict["LEG_DOWN"]
+        self.LEG_W = param_dict["LEG_W"]
+        self.LEG_H = param_dict["LEG_H"]
+        self.LEG_SPRING_TORQUE = param_dict["LEG_SPRING_TORQUE"]
+        self.SIDE_ENGINE_HEIGHT = param_dict["SIDE_ENGINE_HEIGHT"]
+        self.SIDE_ENGINE_AWAY = param_dict["SIDE_ENGINE_AWAY"]
+        self.VIEWPORT_W = param_dict["VIEWPORT_W"]
+        self.VIEWPORT_H = param_dict["VIEWPORT_H"]
+        self.CHUNKS = param_dict["CHUNKS"]
+        self.INITIAL_RANDOM = param_dict["INITIAL_RANDOM"]
+        self.LIDAR_RANGE = param_dict["LIDAR_RANGE"] / self.SCALE
+
+        self.W = self.VIEWPORT_W / self.SCALE
+        self.H = self.VIEWPORT_H / self.SCALE
+        self.HELIPAD_Y = self.H / 2
+        # height of lander body in simulator self.SCALE. self.LANDER_POLY has the (x,y) points that define the
+        # shape of the lander in pixel self.SCALE
+        self.LANDER_POLY_X = np.array(self.LANDER_POLY)[:, 0]
+        self.LANDER_POLY_Y = np.array(self.LANDER_POLY)[:, 1]
+        self.LANDER_W = (np.max(
+            self.LANDER_POLY_X) - np.min(self.LANDER_POLY_X)) / self.SCALE
+        self.LANDER_H = (np.max(
+            self.LANDER_POLY_Y) - np.min(self.LANDER_POLY_Y)) / self.SCALE
+        # distance of edge of legs from center of lander body in simulator self.SCALE
+        self.LEG_X_DIST = self.LEG_AWAY / self.SCALE
+        self.LEG_Y_DIST = self.LEG_DOWN / self.SCALE
+        # radius around lander to check for collisions
+        self.LANDER_RADIUS = (
+            (self.LANDER_H / 2 + self.LEG_Y_DIST +
+                self.LEG_H / self.SCALE) ** 2 +
+            (self.LANDER_W / 2 + self.LEG_X_DIST +
+                self.LEG_W / self.SCALE) ** 2) ** 0.5
+
+        # set up state space bounds used in evaluating the q value function
+        self.vx_bound = param_dict["vx_bound"]
+        self.vy_bound = param_dict["vy_bound"]
+        self.theta_bound = param_dict["theta_bound"]
+        self.theta_dot_bound = param_dict["theta_dot_bound"]
+
+        self.chunk_x = [self.W/(self.CHUNKS-1)*i for i in range(self.CHUNKS)]
+        self.chunk_y = [self.H/(self.CHUNKS-1)*i for i in range(self.CHUNKS)]
+
+        self.helipad_x1 = self.chunk_x[self.CHUNKS//2-1]
+        self.helipad_x2 = self.chunk_x[self.CHUNKS//2+1]
 
         self.hover_min_y_dot = -0.1
         self.hover_max_y_dot = 0.1
@@ -90,221 +217,173 @@ class LunarLanderReachability(LunarLander):
         self.theta_hover_max = np.radians(15.0)  # most the lander can be tilted when landing
         self.theta_hover_min = np.radians(-15.0)
 
-        self.fly_min_x = 0  # first chunk
-        self.fly_max_x = W / (CHUNKS - 1) * (CHUNKS - 1)  # last chunk
-        self.midpoint_x = (self.fly_max_x + self.fly_min_x) / 2
-        self.width_x = (self.fly_max_x - self.fly_min_x)
+        self.midpoint_x = self.W / 2
+        self.width_x = self.W
 
-        self.fly_max_y = VIEWPORT_H / SCALE
-        self.fly_min_y = 0
-        self.midpoint_y = (self.fly_max_y + self.fly_min_y) / 2
-        self.width_y = (self.fly_max_y - self.fly_min_y)
+        self.midpoint_y = self.H / 2
+        self.width_y = self.H
 
-        self.hover_min_x = W / (CHUNKS - 1) * (CHUNKS // 2 - 1)
-        self.hover_max_x = W / (CHUNKS - 1) * (CHUNKS // 2 + 1)
-        self.hover_min_y = HELIPAD_Y  # calc of edges of landing pad based
-        self.hover_max_y = HELIPAD_Y + 2  # on calc in parent reset()
+        self.hover_min_x = self.W / (self.CHUNKS - 1) * (self.CHUNKS // 2 - 1)
+        self.hover_max_x = self.W / (self.CHUNKS - 1) * (self.CHUNKS // 2 + 1)
+        self.hover_min_y = self.HELIPAD_Y  # calc of edges of landing pad based
+        self.hover_max_y = self.HELIPAD_Y + 2  # on calc in parent reset()
 
-        # set up state space bounds used in evaluating the q value function
-        self.vx_bound = 10  # bounds centered at 0 so take negative for lower bound
-        self.vy_bound = 10  # this is in simulator scale
-        self.theta_bound = np.radians(90)
-        self.theta_dot_bound = np.radians(50)
-
-        self.viewer = None
-
-        # Set random seed.
-        self.seed_val = 0
-        np.random.seed(self.seed_val)
-
-        # Cost Params
-        self.penalty = 1
-        self.reward = -1
-        self.costType = 'dense_ell'
-        self.scaling = 1.
-
-        # mode: normal or extend (keep track of ell & g)
-        self.mode = mode
-        if mode == 'extend':
-            self.sim_state = np.zeros(7)
-        else:
-            self.sim_state = np.zeros(6)
-        self.doneType = doneType
-
-        # Visualization params
-        self.axes = None
-        self.img_data = None
-        self.scaling_factor = 3.0
-        self.slices_y = np.array([1, 0, -1]) * self.scaling_factor
-        self.slices_x = np.array([-1, 0, 1]) * self.scaling_factor
-        self.vis_init_flag = True
-        self.visual_initial_states = [
-            np.array([self.midpoint_x + self.width_x/4,
-                      self.midpoint_y + self.width_y/4,
-                      0, 0, 0, 0])]
-
-        if mode == 'extend':
-            self.visual_initial_states = self.extend_state(
-                self.visual_initial_states)
-
-        print("Env: mode---{:s}; doneType---{:s}".format(mode, doneType))
-
-        # for torch
-        self.device = device
-
-        self.bounds_simulation = np.array([[self.fly_min_x, self.fly_max_x],
-                                           [self.fly_min_y, self.fly_max_y],
-                                           [-self.vx_bound, self.vx_bound],
-                                           [-self.vy_bound, self.vy_bound],
-                                           [-self.theta_bound,
-                                            self.theta_bound],
-                                           [-self.theta_dot_bound,
-                                            self.theta_dot_bound]])
-
-        self.tested_margins_flag = False
         self.polygon_target = [
-            (self.helipad_x1, self.helipad_y),
-            (self.helipad_x2, self.helipad_y),
-            (self.helipad_x2, self.helipad_y + 2),
-            (self.helipad_x1, self.helipad_y + 2),
-            (self.helipad_x1, self.helipad_y)]
+            (self.helipad_x1, self.HELIPAD_Y),
+            (self.helipad_x2, self.HELIPAD_Y),
+            (self.helipad_x2, self.HELIPAD_Y + 2),
+            (self.helipad_x1, self.HELIPAD_Y + 2),
+            (self.helipad_x1, self.HELIPAD_Y)]
         self.target_xy_polygon = Polygon(self.polygon_target)
 
-        super(LunarLanderReachability, self).__init__()
+    def seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
 
-        self.before_parent_init = False
-
-        # we don't use the states about whether the legs are touching
-        # so 6 dimensions total.
-        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(6,),
-                                            dtype=np.float32)
-
-        # This makes dynamics deterministic.
-        self.np_random = RandomAlias
-
-        # Check conversions are ok.
-        assert np.all(np.abs(self.obs_scale_to_simulator_scale(
-               self.simulator_scale_to_obs_scale(self.bounds_simulation[:, 0]))
-                - self.bounds_simulation[:, 0]) < 1e-5)
-
-        # convert to observation scale so network can be evaluated
-        self.bounds_observation = np.copy(self.bounds_simulation)
-        self.bounds_observation[:, 0] = self.simulator_scale_to_obs_scale(
-            self.bounds_simulation[:, 0].T)
-        self.bounds_observation[:, 1] = self.simulator_scale_to_obs_scale(
-            self.bounds_simulation[:, 1].T)
-
-    def _test_margins(self):
-        if self.tested_margins_flag is False:
-            self.tested_margins_flag = True
-        else:
-            return True
-        for _ in range(1000):
-            sampled_state = np.random.uniform(
-                low=self.bounds_simulation[:, 0]-1,
-                high=self.bounds_simulation[:, 1]+1)
-            s_contains_bool = self.obstacle_polyline.contains(
-                Point(sampled_state[0], sampled_state[1]))
-            t_contains_bool = self.target_xy_polygon.contains(
-                Point(sampled_state[0], sampled_state[1]))
-            # Check possible mistmatches.
-            s_margin = self.safety_margin(sampled_state)
-            t_margin = self.target_margin(sampled_state)
-            if (((s_margin <= 0) and  # Inside constraint set.
-                    s_contains_bool is False)  # Outside constraint set.
-                    or
-                    ((s_margin > 0) and  # Outside constraint set.
-                     s_contains_bool is True)):  # Inside constraint set.
-                return False
-            elif (((t_margin <= 0) and  # Inside target set.
-                    t_contains_bool is False)  # Outside target set.
-                    or
-                    ((t_margin > 0) and  # Outside target set.
-                     t_contains_bool is True)):  # Inside target set.
-                return False
-        return True
-
-
-    # found online at:
-    # https://codereview.stackexchange.com/questions/69833/..
-    # generate-sample-coordinates-inside-a-polygon
-    # todo{vrubies} why buggy?
-    @staticmethod
-    def random_points_in_polygon(polygon, k):
-        "Return list of k points uniformly at random inside the polygon."
-        areas = []
-        transforms = []
-        for t in triangulate(polygon):
-            areas.append(t.area)
-            (x0, y0), (x1, y1), (x2, y2), _ = t.exterior.coords
-            transforms.append([x1 - x0, x2 - x0, y2 - y0, y1 - y0, x0, y0])
-        points = []
-        for transform in random.choices(transforms, weights=areas, k=k):
-            x, y = [random.random() for _ in range(2)]
-            if x + y > 1:
-                p = Point(1 - x, 1 - y)
-            else:
-                p = Point(x, y)
-            points.append(affine_transform(p, transform))
-        return points
-
-    def extend_state(self, states):
-        new_states = []
-        for state in states:
-            l_x = self.target_margin(state)
-            g_x = self.safety_margin(state)
-            new_states.append(np.append(state, max(l_x, g_x)))
-        return new_states
-
-    def set_lander_state(self, state):
-        # convention is x,y,x_dot,y_dot, theta, theta_dot
-        # These internal variables are in --> simulator scale <--
-        # changes need to be in np.float64
-        self.lander.position = np.array([state[0], state[1]], dtype=np.float64)
-        self.lander.linearVelocity = np.array([state[2], state[3]], dtype=np.float64)
-        self.lander.angle = np.float64(state[4])
-        self.lander.angularVelocity = np.float64(state[5])
-
-        # after lander position is set have to set leg positions to be where
-        # new lander position is.
-        self.legs[0].position = np.array(
-            [self.lander.position.x + LEG_AWAY/SCALE,
-             self.lander.position.y], dtype=np.float64)
-        self.legs[1].position = np.array(
-            [self.lander.position.x - LEG_AWAY/SCALE,
-             self.lander.position.y], dtype=np.float64)
-
-    def generate_terrain(self, terrain_polyline=None):
-        # Destroy moon.
+    def _destroy(self):
+        if not self.moon: return
+        self.world.contactListener = None
+        self._clean_particles(True)
         self.world.DestroyBody(self.moon)
         self.moon = None
+        self.world.DestroyBody(self.lander)
+        self.lander = None
+        self.world.DestroyBody(self.legs[0])
+        self.world.DestroyBody(self.legs[1])
 
-        self.chunk_x = [W/(CHUNKS-1)*i for i in range(CHUNKS)]
-        self.helipad_x1 = self.chunk_x[CHUNKS//2-1]
-        self.helipad_x2 = self.chunk_x[CHUNKS//2+1]
-        self.helipad_y = HELIPAD_Y
+    def reset(self):
+        self._destroy()
+        self.world.contactListener_keepref = ContactDetector(self)
+        self.world.contactListener = self.world.contactListener_keepref
+        self.game_over = False
+        self.prev_shaping = None
+
+        self.generate_terrain()
+        # W = VIEWPORT_W/SCALE
+        # H = VIEWPORT_H/SCALE
+
+        # # terrain
+        # CHUNKS = 11
+        # height = self.np_random.uniform(0, H/2, size=(CHUNKS+1,) )
+        # chunk_x  = [W/(CHUNKS-1)*i for i in range(CHUNKS)]
+        # self.helipad_x1 = chunk_x[CHUNKS//2-1]
+        # self.helipad_x2 = chunk_x[CHUNKS//2+1]
+        # self.helipad_y  = H/4
+        # height[CHUNKS//2-2] = self.helipad_y
+        # height[CHUNKS//2-1] = self.helipad_y
+        # height[CHUNKS//2+0] = self.helipad_y
+        # height[CHUNKS//2+1] = self.helipad_y
+        # height[CHUNKS//2+2] = self.helipad_y
+        # smooth_y = [0.33*(height[i-1] + height[i+0] + height[i+1]) for i in range(CHUNKS)]
+
+        # self.moon = self.world.CreateStaticBody( shapes=edgeShape(vertices=[(0, 0), (W, 0)]) )
+        # self.sky_polys = []
+        # obstacle_polyline = [(chunk_x[0], smooth_y[0])]
+        # for i in range(CHUNKS-1):
+        #     p1 = (chunk_x[i],   smooth_y[i])
+        #     p2 = (chunk_x[i+1], smooth_y[i+1])
+        #     obstacle_polyline.append(p2)
+        #     self.moon.CreateEdgeFixture(
+        #         vertices=[p1,p2],
+        #         density=0,
+        #         friction=0.1)
+        #     self.sky_polys.append( [p1, p2, (p2[0],H), (p1[0],H)] )
+
+        # obstacle_polyline.append((self.W, self.H))
+        # obstacle_polyline.append((0, self.H))
+        # obstacle_polyline.append(obstacle_polyline[0])
+        # self.obstacle_polyline = Polygon(obstacle_polyline)
+
+        # self.moon.color1 = (0.0,0.0,0.0)
+        # self.moon.color2 = (0.0,0.0,0.0)
+
+        initial_y = VIEWPORT_H/SCALE
+        initial_state = self.rejection_sample()
+        assert isinstance(initial_state[0], np.float64), "Float64!"
+        initial_x = initial_state[0]  # self.VIEWPORT_W/self.SCALE/2
+        initial_y = initial_state[1]
+        self.lander = self.world.CreateDynamicBody(
+            position = (initial_x, initial_y),
+            angle=0.0,
+            linearVelocity=(initial_state[2], initial_state[3]),
+            angularVelocity=initial_state[5],
+            fixtures = fixtureDef(
+                shape=polygonShape(vertices=[ (x/SCALE,y/SCALE) for x,y in LANDER_POLY ]),
+                density=5.0,
+                friction=0.1,
+                categoryBits=0x0010,
+                maskBits=0x001,  # collide only with ground
+                restitution=0.0) # 0.99 bouncy
+                )
+        self.lander.color1 = (0.5,0.4,0.9)
+        self.lander.color2 = (0.3,0.3,0.5)
+        # self.lander.ApplyForceToCenter( (
+        #     self.np_random.uniform(-INITIAL_RANDOM, INITIAL_RANDOM),
+        #     self.np_random.uniform(-INITIAL_RANDOM, INITIAL_RANDOM)
+        #     ), True)
+
+        self.legs = []
+        for i in [-1,+1]:
+            leg = self.world.CreateDynamicBody(
+                position = (initial_x  - i*LEG_AWAY/SCALE, initial_y),
+                angle = (i*0.05),
+                fixtures = fixtureDef(
+                    shape=polygonShape(box=(LEG_W/SCALE, LEG_H/SCALE)),
+                    density=1.0,
+                    restitution=0.0,
+                    categoryBits=0x0020,
+                    maskBits=0x001)
+                )
+            leg.ground_contact = False
+            leg.color1 = (0.5,0.4,0.9)
+            leg.color2 = (0.3,0.3,0.5)
+            rjd = revoluteJointDef(
+                bodyA=self.lander,
+                bodyB=leg,
+                localAnchorA=(0, 0),
+                localAnchorB=(i*LEG_AWAY/SCALE, LEG_DOWN/SCALE),
+                enableMotor=True,
+                enableLimit=True,
+                maxMotorTorque=LEG_SPRING_TORQUE,
+                motorSpeed=+0.3*i  # low enough not to jump back into the sky
+                )
+            if i==-1:
+                rjd.lowerAngle = +0.9 - 0.5  # Yes, the most esoteric numbers here, angles legs have freedom to travel within
+                rjd.upperAngle = +0.9
+            else:
+                rjd.lowerAngle = -0.9
+                rjd.upperAngle = -0.9 + 0.5
+            leg.joint = self.world.CreateJoint(rjd)
+            self.legs.append(leg)
+
+        self.drawlist = [self.lander] + self.legs
+
+        return self.step(np.array([0,0]) if self.continuous else 0)[0]
+
+    def generate_terrain(self, terrain_polyline=None):
         # terrain
         if terrain_polyline is None:
-            height = np.ones((CHUNKS+1,))
+            height = np.ones((self.CHUNKS+1,))
         else:
             height = terrain_polyline
-        height[CHUNKS//2-3] = self.helipad_y + 2.5
-        height[CHUNKS//2-2] = self.helipad_y
-        height[CHUNKS//2-1] = self.helipad_y
-        height[CHUNKS//2+0] = self.helipad_y
-        height[CHUNKS//2+1] = self.helipad_y
-        height[CHUNKS//2+2] = self.helipad_y
-        # smooth_y = [0.33*(height[i-1] + height[i+0] + height[i+1]) for i in range(CHUNKS)]
+        height[self.CHUNKS//2-3] = self.HELIPAD_Y + 2.5
+        height[self.CHUNKS//2-2] = self.HELIPAD_Y
+        height[self.CHUNKS//2-1] = self.HELIPAD_Y
+        height[self.CHUNKS//2+0] = self.HELIPAD_Y
+        height[self.CHUNKS//2+1] = self.HELIPAD_Y
+        height[self.CHUNKS//2+2] = self.HELIPAD_Y
+        # smooth_y = [0.33*(height[i-1] + height[i+0] + height[i+1]) for i in range(self.CHUNKS)]
         smooth_y = list(height[:-1])
         # print(smooth_y)
         # assert len(smooth_y) == len(height)
         # smooth_y = list(height)
 
-        self.moon = self.world.CreateStaticBody(shapes=edgeShape(
-            vertices=[(0, 0), (W, 0)]))
+        self.moon = self.world.CreateStaticBody(
+            shapes=edgeShape(vertices=[(0, 0), (self.W, 0)]))
         self.sky_polys = []
+        self.moon_chunk = []
         obstacle_polyline = [(self.chunk_x[0], smooth_y[0])]
-        for i in range(CHUNKS-1):
+        for i in range(self.CHUNKS-1):
             p1 = (self.chunk_x[i], smooth_y[i])
             p2 = (self.chunk_x[i+1], smooth_y[i+1])
             obstacle_polyline.append(p2)
@@ -312,503 +391,273 @@ class LunarLanderReachability(LunarLander):
                 vertices=[p1, p2],
                 density=0,
                 friction=0.1)
-            self.sky_polys.append([p1, p2, (p2[0], H), (p1[0], H)])
+            self.sky_polys.append([p1, p2, (p2[0], self.H), (p1[0], self.H)])
+            self.moon_chunk.append([p1, p2, (p2[0], 0), (p1[0], 0)])
         # Enclose terrain within window.
-        obstacle_polyline.append((W, H))
-        obstacle_polyline.append((0, H))
+        obstacle_polyline.append((self.W, self.H))
+        obstacle_polyline.append((0, self.H))
         obstacle_polyline.append(obstacle_polyline[0])
         self.obstacle_polyline = Polygon(obstacle_polyline)
-        assert self._test_margins()
+        self.paint_obstacle = obstacle_polyline
 
-        self.moon.color1 = (0.0, 0.0, 0.0)
-        self.moon.color2 = (0.0, 0.0, 0.0)
-        # return super(LunarLanderReachability, self).step(
-        #     np.array([0, 0]) if self.continuous else 0)[0]
+        self.moon.color1 = (0.6, 0.6, 0.6)
+        self.moon.color2 = (0.6, 0.6, 0.6)
 
-    def rejection_sample(self):
+    def rejection_sample(self, sample_inside_obs=False, zero_vel=False):
         flag_sample = False
-        while not flag_sample:
-            xy_sample = np.random.uniform(low=[self.fly_min_x,
-                                               self.fly_min_y],
-                                          high=[self.fly_max_x,
-                                                self.fly_max_y])
-            flag_sample = self.obstacle_polyline.contains(
-                Point(xy_sample[0], xy_sample[1]))
-        return xy_sample
+        # Repeat sampling until outside obstacle if needed.
+        while True:
+            xy_sample = np.random.uniform(low=[0,
+                                               0],
+                                          high=[self.W,
+                                                self.H])
+            p = Point(xy_sample[0], xy_sample[1])
+            flag_sample = self.obstacle_polyline.contains(p)
+            if flag_sample is True:
+                break
+            if sample_inside_obs:
+                break
+        # Sample within simulation space bounds.
+        state_in = np.random.uniform(
+            low=self.bounds_simulation_one_player[:, 0],
+            high=self.bounds_simulation_one_player[:, 1])
+        state_in[:2] = xy_sample
+        # If zero_vel active, remove any initial rates.
+        if zero_vel:
+            state_in[[2, 3, -1]] = 0.0
+        return np.float64(state_in)
 
-    def reset(self, state_in=None, terrain_polyline=None,
-              rejection_sampling=False):
-        """
-        resets the environment accoring to a uniform distribution.
-        state_in assumed to be in simulation scale.
-        :return: current state as 6d NumPy array of floats
-        """
-        # This returns something in --> observation scale <--.
-        s = super(LunarLanderReachability, self).reset()
-        self.generate_terrain(terrain_polyline=terrain_polyline)
+    def _create_particle(self, mass, x, y, ttl):
+        p = self.world.CreateDynamicBody(
+            position = (x,y),
+            angle=0.0,
+            fixtures = fixtureDef(
+                shape=circleShape(radius=2/SCALE, pos=(0,0)),
+                density=mass,
+                friction=0.1,
+                categoryBits=0x0100,
+                maskBits=0x001,  # collide only with ground
+                restitution=0.3)
+                )
+        p.ttl = ttl
+        self.particles.append(p)
+        self._clean_particles(False)
+        return p
 
-        # Rewrite internal lander variables in --> simulation scale <--.
-        if state_in is None:
-            state_in = np.copy(self.obs_scale_to_simulator_scale(s))
-            # Have to sample uniformly to get good coverage of the state space.
-            if rejection_sampling:
-                state_in[:2] = self.rejection_sample()
-            else:
-                state_in[:2] = np.random.uniform(low=[self.fly_min_x,
-                                                      self.fly_min_y],
-                                                 high=[self.fly_max_x,
-                                                       self.fly_max_y])
-                # point = self.random_points_in_polygon(self.obstacle_polyline, 1)[0]
-                # state_in[:2] = np.array([point.x, point.y])
-            state_in[4] = np.random.uniform(low=-self.theta_bound,
-                                            high=self.theta_bound)
-        else:
-            # Ensure that when specifing a state it is within
-            # our simulation bounds.
-            for ii in range(len(state_in)):
-                state_in[ii] = np.float64(
-                    min(state_in[ii], self.bounds_simulation[ii, 1]))
-                state_in[ii] = np.float64(
-                    max(state_in[ii], self.bounds_simulation[ii, 0]))
-        self.set_lander_state(state_in)
+    def _clean_particles(self, all):
+        while self.particles and (all or self.particles[0].ttl<0):
+            self.world.DestroyBody(self.particles.pop(0))
 
-        # Convert from simulator scale to observation scale.
-        s = self.simulator_scale_to_obs_scale(state_in)
+    # def target_margin(self, state):
+    #     # States come in sim_space.
+    #     if not self.parent_init:
+    #         return 0
+    #     x = state[0]
+    #     y = state[1]
+    #     vx = state[2]
+    #     vy = state[3]
+    #     speed = np.sqrt(vx**2 + vy**2)
+    #     p = Point(x, y)
+    #     L2_distance = self.target_xy_polygon.exterior.distance(p)
+    #     inside = 2*self.target_xy_polygon.contains(p) - 1
+    #     vel_l = speed - self.vy_bound/10.0
+    #     # return max(-inside*L2_distance, vel_l)
+    #     return -inside*L2_distance
 
-        # Return in --> observation scale <--.
-        return s
-
-    def get_state(self):
-        """
-        gets the current state of the environment
-        :return: length 6 array of x, y, x_dot, y_dot, theta, theta_dot in simulator scale
-        """
-        return np.array([self.lander.position.x,
-                         self.lander.position.y,
-                         self.lander.linearVelocity.x,
-                         self.lander.linearVelocity.y,
-                         self.lander.angle,
-                         self.lander.angularVelocity])
+    # def safety_margin(self, state):
+    #     # States come in sim_space.
+    #     if not self.parent_init:
+    #         return 0
+    #     x = state[0]
+    #     y = state[1]
+    #     p = Point(x, y)
+    #     L2_distance = self.obstacle_polyline.exterior.distance(p)
+    #     inside = 2*self.obstacle_polyline.contains(p) - 1
+    #     return -inside*L2_distance
 
     def step(self, action):
-        if self.before_parent_init:
-            cost = None  # Can't be computed.
-            obs_s, _, done, info = super(LunarLanderReachability, self).step(
-                action)
-            return np.copy(obs_s[:-2]), cost, False, {}
+        if self.continuous:
+            action = np.clip(action, -1, +1).astype(np.float32)
         else:
-            # Note that l function must be computed before environment
-            # steps see reamdme for proof.
-            l_x_cur = self.target_margin(self.get_state())
-            g_x_cur = self.safety_margin(self.get_state())
+            assert self.action_space.contains(action), "%r (%s) invalid " % (action, type(action))
 
-        obs_s, _, done, info = super(LunarLanderReachability, self).step(
-            action)
-        self.obs_state = obs_s[:-2]  # Remove states dealing with contacts.
-        self.sim_state = self.obs_scale_to_simulator_scale(self.obs_state)
-        l_x_nxt = self.target_margin(self.get_state())
-        g_x_nxt = self.safety_margin(self.get_state())
+        # Engines
+        tip  = (math.sin(self.lander.angle), math.cos(self.lander.angle))
+        side = (-tip[1], tip[0]);
+        # dispersion = [self.np_random.uniform(-1.0, +1.0) / SCALE for _ in range(2)]
+        dispersion = [0.0 ,0.0]
 
-        # cost
-        if self.mode == 'extend' or self.mode == 'RA':
-            fail = g_x_cur > 0
-            success = l_x_cur <= 0
-            if fail:
-                cost = self.penalty
-            elif success:
-                cost = self.reward
+        m_power = 0.0
+        if (self.continuous and action[0] > 0.0) or (not self.continuous and action==2):
+            # Main engine
+            if self.continuous:
+                m_power = (np.clip(action[0], 0.0,1.0) + 1.0)*0.5   # 0.5..1.0
+                assert m_power>=0.5 and m_power <= 1.0
             else:
-                cost = 0.
-        else:
-            fail = g_x_nxt > 0
-            success = l_x_nxt <= 0
-            if g_x_nxt > 0 or g_x_cur > 0:
-                cost = self.penalty
-            elif l_x_nxt <= 0 or l_x_cur <= 0:
-                cost = self.reward
+                m_power = 1.0
+            ox =  tip[0]*(4/SCALE + 2*dispersion[0]) + side[0]*dispersion[1]   # 4 is move a bit downwards, +-2 for randomness
+            oy = -tip[1]*(4/SCALE + 2*dispersion[0]) - side[1]*dispersion[1]
+            impulse_pos = (self.lander.position[0] + ox, self.lander.position[1] + oy)
+            p = self._create_particle(3.5, impulse_pos[0], impulse_pos[1], m_power)    # particles are just a decoration, 3.5 is here to make particle speed adequate
+            p.ApplyLinearImpulse(           ( ox*MAIN_ENGINE_POWER*m_power,  oy*MAIN_ENGINE_POWER*m_power), impulse_pos, True)
+            self.lander.ApplyLinearImpulse( (-ox*MAIN_ENGINE_POWER*m_power, -oy*MAIN_ENGINE_POWER*m_power), impulse_pos, True)
+
+        s_power = 0.0
+        if (self.continuous and np.abs(action[1]) > 0.5) or (not self.continuous and action in [1,3]):
+            # Orientation engines
+            if self.continuous:
+                direction = np.sign(action[1])
+                s_power = np.clip(np.abs(action[1]), 0.5,1.0)
+                assert s_power>=0.5 and s_power <= 1.0
             else:
-                if self.costType == 'dense_ell':
-                    cost = l_x_nxt
-                elif self.costType == 'dense_ell_g':
-                    cost = l_x_nxt + g_x_nxt
-                elif self.costType == 'imp_ell_g':
-                    cost = (l_x_nxt-l_x_cur) + (g_x_nxt-g_x_cur)
-                elif self.costType == 'imp_ell':
-                    cost = (l_x_nxt-l_x_cur)
-                elif self.costType == 'sparse':
-                    cost = 0. * self.scaling
-                elif self.costType == 'max_ell_g':
-                    cost = max(l_x_nxt, g_x_nxt)
+                direction = action-2
+                s_power = 1.0
+            ox =  tip[0]*dispersion[0] + side[0]*(3*dispersion[1]+direction*SIDE_ENGINE_AWAY/SCALE)
+            oy = -tip[1]*dispersion[0] - side[1]*(3*dispersion[1]+direction*SIDE_ENGINE_AWAY/SCALE)
+            impulse_pos = (self.lander.position[0] + ox - tip[0]*17/SCALE, self.lander.position[1] + oy + tip[1]*SIDE_ENGINE_HEIGHT/SCALE)
+            p = self._create_particle(0.7, impulse_pos[0], impulse_pos[1], s_power)
+            p.ApplyLinearImpulse(           ( ox*SIDE_ENGINE_POWER*s_power,  oy*SIDE_ENGINE_POWER*s_power), impulse_pos, True)
+            self.lander.ApplyLinearImpulse( (-ox*SIDE_ENGINE_POWER*s_power, -oy*SIDE_ENGINE_POWER*s_power), impulse_pos, True)
+
+        self.world.Step(1.0/FPS, 6*30, 2*30)
+
+        pos = self.lander.position
+        vel = self.lander.linearVelocity
+        state = [
+            (pos.x - VIEWPORT_W/SCALE/2) / (VIEWPORT_W/SCALE/2),
+            (pos.y - (self.HELIPAD_Y+LEG_DOWN/SCALE)) / (VIEWPORT_H/SCALE/2),
+            vel.x*(VIEWPORT_W/SCALE/2)/FPS,
+            vel.y*(VIEWPORT_H/SCALE/2)/FPS,
+            self.lander.angle,
+            20.0*self.lander.angularVelocity/FPS,
+            1.0 if self.legs[0].ground_contact else 0.0,
+            1.0 if self.legs[1].ground_contact else 0.0
+            ]
+        assert len(state)==8
+
+        reward = 0
+        shaping = \
+            - 100*np.sqrt(state[0]*state[0] + state[1]*state[1]) \
+            - 100*np.sqrt(state[2]*state[2] + state[3]*state[3]) \
+            - 100*abs(state[4]) + 10*state[6] + 10*state[7]   # And ten points for legs contact, the idea is if you
+                                                              # lose contact again after landing, you get negative reward
+        if self.prev_shaping is not None:
+            reward = shaping - self.prev_shaping
+        self.prev_shaping = shaping
+
+        reward -= m_power*0.30  # less fuel spent is better, about -30 for heurisic landing
+        reward -= s_power*0.03
+
+        done = False
+        if self.game_over or abs(state[0]) >= 1.0:
+            done   = True
+            reward = -100
+        if not self.lander.awake:
+            done   = True
+            reward = +100
+        return np.array(state, dtype=np.float32), reward, done, {}
+
+    def render(self, mode='human'):
+        from gym.envs.classic_control import rendering
+        if self.viewer is None:
+            self.viewer = rendering.Viewer(VIEWPORT_W, VIEWPORT_H)
+            self.viewer.set_bounds(0, VIEWPORT_W/SCALE, 0, VIEWPORT_H/SCALE)
+
+        for obj in self.particles:
+            obj.ttl -= 0.15
+            obj.color1 = (max(0.2,0.2+obj.ttl), max(0.2,0.5*obj.ttl), max(0.2,0.5*obj.ttl))
+            obj.color2 = (max(0.2,0.2+obj.ttl), max(0.2,0.5*obj.ttl), max(0.2,0.5*obj.ttl))
+
+        self._clean_particles(False)
+
+        for p in self.sky_polys:
+            self.viewer.draw_polygon(p, color=(0,0,0))
+
+        for obj in self.particles + self.drawlist:
+            for f in obj.fixtures:
+                trans = f.body.transform
+                if type(f.shape) is circleShape:
+                    t = rendering.Transform(translation=trans*f.shape.pos)
+                    self.viewer.draw_circle(f.shape.radius, 20, color=obj.color1).add_attr(t)
+                    self.viewer.draw_circle(f.shape.radius, 20, color=obj.color2, filled=False, linewidth=2).add_attr(t)
                 else:
-                    cost = 0.
-        # done
-        # if not done and self.doneType == 'toEnd':
-        #     outsideTop = (self.sim_state[1] >= self.bounds_simulation[1, 1])
-        #     outsideLeft = (self.sim_state[0] <= self.bounds_simulation[0, 0])
-        #     outsideRight = (self.sim_state[0] >= self.bounds_simulation[0, 1])
-        #     done = outsideTop or outsideLeft or outsideRight
-        if not done:
-            done = fail or success
-            # assert self.doneType == 'TF', 'invalid doneType'
+                    path = [trans*v for v in f.shape.vertices]
+                    self.viewer.draw_polygon(path, color=obj.color1)
+                    path.append(path[0])
+                    self.viewer.draw_polyline(path, color=obj.color2, linewidth=2)
 
-        info = {"g_x": g_x_cur,  "l_x": l_x_cur, "g_x_nxt": g_x_nxt,
-                "l_x_nxt": l_x_nxt}
-        return np.copy(self.obs_state), cost, done, info
+        for x in [self.helipad_x1, self.helipad_x2]:
+            flagy1 = self.HELIPAD_Y
+            flagy2 = flagy1 + 50/SCALE
+            self.viewer.draw_polyline( [(x, flagy1), (x, flagy2)], color=(1,1,1) )
+            self.viewer.draw_polygon( [(x, flagy2), (x, flagy2-10/SCALE), (x+25/SCALE, flagy2-5/SCALE)], color=(0.8,0.8,0) )
 
-    def safety_margin(self, state):
+        self.viewer.draw_polyline(self.paint_obstacle, color=(1, 0, 0), linewidth=10)
 
-        x = state[0]
-        y = state[1]
-        p = Point(x, y)
-        L2_distance = self.obstacle_polyline.exterior.distance(p)
-        inside = 2*self.obstacle_polyline.contains(p) - 1
-        return -inside*L2_distance
+        return self.viewer.render(return_rgb_array = mode=='rgb_array')
 
-    def target_margin(self, state):
+    def close(self):
+        if self.viewer is not None:
+            self.viewer.close()
+            self.viewer = None
 
-        # all in simulation scale
-        x = state[0]
-        y = state[1]
-        p = Point(x, y)
-        L2_distance = self.target_xy_polygon.exterior.distance(p)
-        inside = 2*self.target_xy_polygon.contains(p) - 1
-        return -inside*L2_distance
+class LunarLanderContinuous(LunarLanderReachability):
+    continuous = True
 
-        # landing_distance = np.min([
-        #     # 10 * (theta - self.theta_hover_min),  # heading error multiply 10
-        #     # 10 * (self.theta_hover_max - theta),  # for similar scale of units
-        #     x - self.helipad_x1,# - LANDER_RADIUS,
-        #     self.helipad_x2 - x,# - LANDER_RADIUS,
-        #     y - self.helipad_y,# - LANDER_RADIUS,
-        #     (self.helipad_y + 2) - y])# - LANDER_RADIUS])
-        #     # ,
-        #     # y_dot - self.hover_min_y_dot,
-        #     # self.hover_max_y_dot - y_dot,
-        #     # x_dot - self.hover_min_x_dot,
-        #     # self.hover_max_x_dot - x_dot])  # speed check
+def heuristic(env, s):
+    # Heuristic for:
+    # 1. Testing.
+    # 2. Demonstration rollout.
+    angle_targ = s[0]*0.5 + s[2]*1.0         # angle should point towards center (s[0] is horizontal coordinate, s[2] hor speed)
+    if angle_targ >  0.4: angle_targ =  0.4  # more than 0.4 radians (22 degrees) is bad
+    if angle_targ < -0.4: angle_targ = -0.4
+    hover_targ = 0.55*np.abs(s[0])           # target y should be proporional to horizontal offset
 
-        # return -landing_distance
+    # PID controller: s[4] angle, s[5] angularSpeed
+    angle_todo = (angle_targ - s[4])*0.5 - (s[5])*1.0
+    #print("angle_targ=%0.2f, angle_todo=%0.2f" % (angle_targ, angle_todo))
 
-    #@staticmethod
-    def simulator_scale_to_obs_scale(self, state):
-        """
-        converts from simulator scale to observation scale see comment at top of class
-        :param state: length 6 array of x, y, x_dot, y_dot, theta, theta_dot in simulator scale
-        :return: length 6 array of x, y, x_dot, y_dot, theta, theta_dot in obs scale
-        needs to return array with np.float32 precision
-        """
-        copy_state = np.copy(state)
-        chg_dims = self.observation_space.shape[0]
-        x, y, x_dot, y_dot, theta, theta_dot = copy_state[:chg_dims]
-        copy_state[:chg_dims] = np.array([
-            (x - VIEWPORT_W / SCALE / 2) / (VIEWPORT_W / SCALE / 2),
-            (y - (HELIPAD_Y + LEG_DOWN/SCALE)) / (VIEWPORT_H / SCALE / 2),
-            x_dot * (VIEWPORT_W / SCALE / 2) / FPS,
-            y_dot * (VIEWPORT_H / SCALE / 2) / FPS,
-            theta,
-            20.0*theta_dot / FPS], dtype=np.float32)  # theta_dot])
-        return copy_state
+    # PID controller: s[1] vertical coordinate s[3] vertical speed
+    hover_todo = (hover_targ - s[1])*0.5 - (s[3])*0.5
+    #print("hover_targ=%0.2f, hover_todo=%0.2f" % (hover_targ, hover_todo))
 
-    #@staticmethod
-    def obs_scale_to_simulator_scale(self, state):
-        """
-        converts from observation scale to simulator scale see comment at top of class
-        :param state: length 6 array of x, y, x_dot, y_dot, theta, theta_dot in simulator scale
-        :return: length 6 array of x, y, x_dot, y_dot, theta, theta_dot in obs scale
-        needs to return array with np.float64 precision
-        """
-        copy_state = np.copy(state)
-        chg_dims = self.observation_space.shape[0]
-        x, y, x_dot, y_dot, theta, theta_dot = copy_state[:chg_dims]
-        copy_state[:chg_dims] = np.array([
-            (x * (VIEWPORT_W / SCALE / 2)) + (VIEWPORT_W / SCALE / 2),
-            (y * (VIEWPORT_H / SCALE / 2)) + (HELIPAD_Y + LEG_DOWN/SCALE),
-            x_dot / ((VIEWPORT_W / SCALE / 2) / FPS),
-            y_dot / ((VIEWPORT_H / SCALE / 2) / FPS),
-            theta,
-            theta_dot * FPS / 20.0], dtype=np.float64)  # theta_dot])
-        return copy_state
+    if s[6] or s[7]: # legs have contact
+        angle_todo = 0
+        hover_todo = -(s[3])*0.5  # override to reduce fall speed, that's all we need after contact
 
-    def set_doneType(self, doneType):
-        self.doneType = doneType
+    if env.continuous:
+        a = np.array( [hover_todo*20 - 1, -angle_todo*20] )
+        a = np.clip(a, -1, +1)
+    else:
+        a = 0
+        if hover_todo > np.abs(angle_todo) and hover_todo > 0.05: a = 2
+        elif angle_todo < -0.05: a = 3
+        elif angle_todo > +0.05: a = 1
+    return a
 
-    def set_costParam(self, penalty=1, reward=-1, costType='normal', scaling=4.):
-        self.penalty = penalty
-        self.reward = reward
-        self.costType = costType
-        self.scaling = scaling
+def demo_heuristic_lander(env, seed=None, render=False):
+    env.seed(seed)
+    total_reward = 0
+    steps = 0
+    s = env.reset()
+    while True:
+        a = heuristic(env, s)
+        s, r, done, info = env.step(a)
+        total_reward += r
 
-    def set_seed(self, seed):
-        """ Set the random seed.
+        if render:
+            still_open = env.render()
+            if still_open == False: break
 
-        Args:
-            seed: Random seed.
-        """
-        self.seed_val = seed
-        np.random.seed(self.seed_val)
-
-    def simulate_one_trajectory(self, q_func, T=10, state=None):
-        """
-        simulates one trajectory in observation scale.
-        """
-        if state is None:
-            state = self.reset()
-        else:
-            state = self.reset(state)
-        traj_x = [state[0]]
-        traj_y = [state[1]]
-        result = 0  # Not finished.
-
-        for t in range(T):
-            state_sim = self.obs_scale_to_simulator_scale(state)
-            s_margin = self.safety_margin(state_sim)
-            t_margin = self.target_margin(state_sim)
-            if s_margin > 0:
-                result = -1  # Failed.
-                break
-            elif t_margin <= 0:
-                result = 1  # Succeeded.
-                break
-            # print("S_Margin: ", s_margin)
-            # print("T_Margin: ", t_margin)
-
-            state_tensor = torch.FloatTensor(state).to(self.device).unsqueeze(0)
-            action_index = q_func(state_tensor).min(dim=1)[1].item()
-
-            state, _, done, _ = self.step(action_index)
-            traj_x.append(state[0])
-            traj_y.append(state[1])
-            if done:
-                result = -1
-                break
+        if steps % 20 == 0 or done:
+            print("observations:", " ".join(["{:+0.2f}".format(x) for x in s]))
+            print("step {} total_reward {:+0.2f}".format(steps, total_reward))
+        steps += 1
+        if done: break
+    return total_reward
 
 
-        return traj_x, traj_y, result
-
-    def simulate_trajectories(self, q_func, T=10, num_rnd_traj=None,
-                              states=None, *args, **kwargs):
-
-        assert ((num_rnd_traj is None and states is not None) or
-                (num_rnd_traj is not None and states is None) or
-                (len(states) == num_rnd_traj))
-        trajectories = []
-
-        if states is None:
-            results = np.empty(shape=(num_rnd_traj,), dtype=int)
-            for idx in range(num_rnd_traj):
-                traj_x, traj_y, result = self.simulate_one_trajectory(
-                    q_func, T=T)
-                trajectories.append((traj_x, traj_y))
-                results[idx] = result
-        else:
-            results = np.empty(shape=(len(states),), dtype=int)
-            for idx, state in enumerate(states):
-                traj_x, traj_y, result = self.simulate_one_trajectory(
-                    q_func, T=T, state=state)
-                trajectories.append((traj_x, traj_y))
-                results[idx] = result
-
-        return trajectories, results
-
-    def plot_trajectories(self, q_func, T=10, num_rnd_traj=None, states=None,
-                          c='w', ax=None):
-        # plt.figure(2)
-        assert ((num_rnd_traj is None and states is not None) or
-                (num_rnd_traj is not None and states is None) or
-                (len(states) == num_rnd_traj))
-        # plt.clf()
-        if ax == None:
-            ax=plt.gca()
-        trajectories, results = self.simulate_trajectories(
-            q_func, T=T, num_rnd_traj=num_rnd_traj, states=states)
-        for traj in trajectories:
-            traj_x, traj_y = traj
-            ax.scatter(traj_x[0], traj_y[0], s=24, c=c)
-            ax.plot(traj_x, traj_y, color=c, linewidth=2)
-
-        return results
-
-    def get_value(self, q_func, nx=41, ny=121, x_dot=0, y_dot=0, theta=0, theta_dot=0,
-                  addBias=False):
-        v = np.zeros((nx, ny))
-        max_lg = np.zeros((nx, ny))
-        it = np.nditer(v, flags=['multi_index'])
-        xs = np.linspace(self.bounds_observation[0, 0],
-                         self.bounds_observation[0, 1], nx)
-        ys = np.linspace(self.bounds_observation[1, 0],
-                         self.bounds_observation[1, 1], ny)
-        # Convert slice simulation variables to observation scale.
-        (_, _,
-         x_dot, y_dot, theta, theta_dot) = self.simulator_scale_to_obs_scale(
-            np.array([0, 0, x_dot, y_dot, theta, theta_dot]))
-        # print("Start value collection on grid...")
-        while not it.finished:
-            idx = it.multi_index
-
-            x = xs[idx[0]]
-            y = ys[idx[1]]
-            l_x = self.target_margin(
-                self.obs_scale_to_simulator_scale(
-                    np.array([x, y, x_dot, y_dot, theta, theta_dot])))
-            g_x = self.safety_margin(
-                self.obs_scale_to_simulator_scale(
-                    np.array([x, y, x_dot, y_dot, theta, theta_dot])))
-
-            if self.mode == 'normal' or self.mode == 'RA':
-                state = torch.FloatTensor(
-                    [x, y, x_dot, y_dot, theta, theta_dot]).to(self.device).unsqueeze(0)
-            else:
-                z = max([l_x, g_x])
-                state = torch.FloatTensor(
-                    [x, y, x_dot, y_dot, theta, theta_dot, z]).to(self.device).unsqueeze(0)
-            if addBias:
-                v[idx] = q_func(state).min(dim=1)[0].item() + max(l_x, g_x)
-            else:
-                v[idx] = q_func(state).min(dim=1)[0].item()
-            v[idx] = max(g_x, min(l_x, v[idx]))
-            it.iternext()
-        # print("End value collection on grid.")
-        return v, xs, ys
-
-    def get_axes(self):
-        """ Gets the bounds for the environment.
-
-        Returns:
-            List containing a list of bounds for each state coordinate and a
-        """
-        aspect_ratio = (
-            (self.bounds_observation[0, 1] - self.bounds_observation[0, 0]) /
-            (self.bounds_observation[1, 1] - self.bounds_observation[1, 0]))
-        axes = np.array([self.bounds_observation[0, 0] - 0.05,
-                         self.bounds_observation[0, 1] + 0.05,
-                         self.bounds_observation[1, 0] - 0.15,
-                         self.bounds_observation[1, 1] + 0.15])
-        return [axes, aspect_ratio]
-
-    def imshow_lander(self, extent=None, alpha=0.4, ax=None):
-        if self.img_data is None:
-            # todo{vrubies} can we find way to supress gym window?
-            img_data = self.render(mode="rgb_array")
-            self.close()
-            self.img_data = img_data[::2, ::3, :]  # Reduce image size.
-        if ax == None:
-            ax=plt.gca()
-        ax.imshow(self.img_data,
-                   interpolation='none', extent=extent,
-                   origin='upper', alpha=alpha)
-
-    def visualize(self, q_func, no_show=False,
-                  vmin=-50, vmax=50, nx=91, ny=91,
-                  labels=['', ''],
-                  boolPlot=False, plotZero=False,
-                  cmap='seismic', addBias=False, trueRAZero=False, lvlset=0):
-        """ Overlays analytic safe set on top of state value function.
-
-        Args:
-            v: State value function.
-        """
-        # plt.figure(1)
-        # plt.clf()
-        axStyle = self.get_axes()
-        numX = len(self.slices_x)
-        numY = len(self.slices_y)
-        if self.axes is None:
-            self.fig, self.axes = plt.subplots(
-                numX, numY, figsize=(2*numY, 2*numX), sharex=True, sharey=True)
-        # else:
-        #     self.fig.clf()
-        #     self.fig, self.axes = plt.subplots(
-        #         numX, numY, figsize=(2*numY, 2*numX), sharex=True, sharey=True)
-        for y_jj, y_dot in enumerate(self.slices_y):
-            for x_ii, x_dot in enumerate(self.slices_x):
-                ax = self.axes[y_jj][x_ii]
-                ax.cla()
-                # print("Subplot -> ", y_jj*len(self.slices_y)+x_ii+1)
-                v, xs, ys = self.get_value(q_func, nx, ny,
-                                           x_dot=x_dot, y_dot=y_dot, theta=0,
-                                           theta_dot=0, addBias=addBias)
-
-                #== Plot Value Function ==
-                if boolPlot:
-                    if trueRAZero:
-                        nx1 = nx
-                        ny1 = ny
-                        resultMtx = np.empty((nx1, ny1), dtype=int)
-                        xs = np.linspace(self.bounds_simulation[0, 0],
-                                         self.bounds_simulation[0, 1], nx1)
-                        ys = np.linspace(self.bounds_simulation[1, 0],
-                                         self.bounds_simulation[1, 1], ny1)
-
-                        it = np.nditer(resultMtx, flags=['multi_index'])
-                        while not it.finished:
-                            idx = it.multi_index
-                            x = xs[idx[0]]
-                            y = ys[idx[1]]
-
-                            state = np.array([x, y, x_dot, y_dot, 0, 0])
-                            (traj_x, traj_y,
-                                result) = self.simulate_one_trajectory(
-                                q_func, T=400, state=state)
-
-                            resultMtx[idx] = result
-                            it.iternext()
-                        im = ax.imshow(resultMtx.T != 1,
-                                        interpolation='none', extent=axStyle[0],
-                                        origin="lower", cmap=cmap)
-                    else:
-                        im = ax.imshow(v.T > lvlset,
-                                        interpolation='none', extent=axStyle[0],
-                                        origin="lower", cmap=cmap)
-                else:
-                    vmin = np.min(v)
-                    vmax = np.max(v)
-                    vstar = max(abs(vmin), vmax)
-                    im = ax.imshow(v.T,
-                                    interpolation='none', extent=axStyle[0],
-                                    origin="lower", cmap=cmap, vmin=-vstar,
-                                    vmax=vstar)
-
-                #  == Plot Environment ==
-                self.imshow_lander(extent=axStyle[0], alpha=0.4, ax=ax)
+if __name__ == '__main__':
+    demo_heuristic_lander(LunarLander(), render=True)
 
 
-                # _ = self.plot_trajectories( q_func, T=100, states=self.visual_initial_states, ax=ax)
-
-                ax.axis(axStyle[0])
-                ax.grid(False)
-                ax.set_aspect(axStyle[1])  # makes equal aspect ratio
-                if labels is not None:
-                    ax.set_xlabel(labels[0], fontsize=52)
-                    ax.set_ylabel(labels[1], fontsize=52)
-
-                ax.tick_params(axis='both', which='both',  # both x and y axes, both major and minor ticks are affected
-                               bottom=False, top=False,    # ticks along the top and bottom edges are off
-                               left=False, right=False)    # ticks along the left and right edges are off
-                ax.set_xticklabels([])
-                ax.set_yticklabels([])
-                if trueRAZero:
-                    return
-        plt.tight_layout()
-
-        if not no_show:
-            plt.show()
-
-
-class RandomAlias:
-    # Note: This is a little hacky. The LunarLander uses the instance attribute self.np_random to
-    # pick the moon chunks placements and also determine the randomness in the dynamics and
-    # starting conditions. The size argument is only used for determining the height of the
-    # chunks so this can be used to set the height of the chunks. When low=-1.0 and high=1.0 the
-    # dispersion on the particles is determined on line 247 in step LunarLander which makes the
-    # dynamics probabilistic. Safety Bellman Equation assumes deterministic dynamics so we set that
-    # to be constant
-
-    @staticmethod
-    def uniform(low, high, size=None):
-        if size is None:
-            if low == -1.0 and high == 1.0:
-                return 0
-            else:
-                return np.random.uniform(low=low, high=high)
-        else:
-            return np.ones(12) * HELIPAD_Y * 0.1 # this makes the ground flat
