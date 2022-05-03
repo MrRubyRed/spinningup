@@ -259,43 +259,6 @@ class LunarLanderReachability(gym.Env, EzPickle):
         self.prev_shaping = None
 
         self.generate_terrain()
-        # W = VIEWPORT_W/SCALE
-        # H = VIEWPORT_H/SCALE
-
-        # # terrain
-        # CHUNKS = 11
-        # height = self.np_random.uniform(0, H/2, size=(CHUNKS+1,) )
-        # chunk_x  = [W/(CHUNKS-1)*i for i in range(CHUNKS)]
-        # self.helipad_x1 = chunk_x[CHUNKS//2-1]
-        # self.helipad_x2 = chunk_x[CHUNKS//2+1]
-        # self.helipad_y  = H/4
-        # height[CHUNKS//2-2] = self.helipad_y
-        # height[CHUNKS//2-1] = self.helipad_y
-        # height[CHUNKS//2+0] = self.helipad_y
-        # height[CHUNKS//2+1] = self.helipad_y
-        # height[CHUNKS//2+2] = self.helipad_y
-        # smooth_y = [0.33*(height[i-1] + height[i+0] + height[i+1]) for i in range(CHUNKS)]
-
-        # self.moon = self.world.CreateStaticBody( shapes=edgeShape(vertices=[(0, 0), (W, 0)]) )
-        # self.sky_polys = []
-        # obstacle_polyline = [(chunk_x[0], smooth_y[0])]
-        # for i in range(CHUNKS-1):
-        #     p1 = (chunk_x[i],   smooth_y[i])
-        #     p2 = (chunk_x[i+1], smooth_y[i+1])
-        #     obstacle_polyline.append(p2)
-        #     self.moon.CreateEdgeFixture(
-        #         vertices=[p1,p2],
-        #         density=0,
-        #         friction=0.1)
-        #     self.sky_polys.append( [p1, p2, (p2[0],H), (p1[0],H)] )
-
-        # obstacle_polyline.append((self.W, self.H))
-        # obstacle_polyline.append((0, self.H))
-        # obstacle_polyline.append(obstacle_polyline[0])
-        # self.obstacle_polyline = Polygon(obstacle_polyline)
-
-        # self.moon.color1 = (0.0,0.0,0.0)
-        # self.moon.color2 = (0.0,0.0,0.0)
 
         initial_y = VIEWPORT_H/SCALE
         initial_state = self.rejection_sample()
@@ -448,34 +411,34 @@ class LunarLanderReachability(gym.Env, EzPickle):
         while self.particles and (all or self.particles[0].ttl<0):
             self.world.DestroyBody(self.particles.pop(0))
 
-    # def target_margin(self, state):
-    #     # States come in sim_space.
-    #     if not self.parent_init:
-    #         return 0
-    #     x = state[0]
-    #     y = state[1]
-    #     vx = state[2]
-    #     vy = state[3]
-    #     speed = np.sqrt(vx**2 + vy**2)
-    #     p = Point(x, y)
-    #     L2_distance = self.target_xy_polygon.exterior.distance(p)
-    #     inside = 2*self.target_xy_polygon.contains(p) - 1
-    #     vel_l = speed - self.vy_bound/10.0
-    #     # return max(-inside*L2_distance, vel_l)
-    #     return -inside*L2_distance
+    def target_margin(self, state):
+        # States come in sim_space.
+        if not self.parent_init:
+            return 0
+        x = state[0]
+        y = state[1]
+        vx = state[2]
+        vy = state[3]
+        speed = np.sqrt(vx**2 + vy**2)
+        p = Point(x, y)
+        L2_distance = self.target_xy_polygon.exterior.distance(p)
+        inside = 2*self.target_xy_polygon.contains(p) - 1
+        vel_l = speed - self.vy_bound/10.0
+        # return max(-inside*L2_distance, vel_l)
+        return -inside*L2_distance
 
-    # def safety_margin(self, state):
-    #     # States come in sim_space.
-    #     if not self.parent_init:
-    #         return 0
-    #     x = state[0]
-    #     y = state[1]
-    #     p = Point(x, y)
-    #     L2_distance = self.obstacle_polyline.exterior.distance(p)
-    #     inside = 2*self.obstacle_polyline.contains(p) - 1
-    #     return -inside*L2_distance
+    def safety_margin(self, state):
+        # States come in sim_space.
+        if not self.parent_init:
+            return 0
+        x = state[0]
+        y = state[1]
+        p = Point(x, y)
+        L2_distance = self.obstacle_polyline.exterior.distance(p)
+        inside = 2*self.obstacle_polyline.contains(p) - 1
+        return -inside*L2_distance
 
-    def step(self, action):
+    def parent_step(self, action):
         if self.continuous:
             action = np.clip(action, -1, +1).astype(np.float32)
         else:
@@ -523,6 +486,16 @@ class LunarLanderReachability(gym.Env, EzPickle):
 
         pos = self.lander.position
         vel = self.lander.linearVelocity
+        unscaled_state = [
+            pos.x,
+            pos.y,
+            vel.x,
+            vel.y,
+            self.lander.angle,
+            self.lander.angularVelocity,
+            1.0 if self.legs[0].ground_contact else 0.0,
+            1.0 if self.legs[1].ground_contact else 0.0
+            ]
         state = [
             (pos.x - VIEWPORT_W/SCALE/2) / (VIEWPORT_W/SCALE/2),
             (pos.y - (self.HELIPAD_Y+LEG_DOWN/SCALE)) / (VIEWPORT_H/SCALE/2),
@@ -555,7 +528,21 @@ class LunarLanderReachability(gym.Env, EzPickle):
         if not self.lander.awake:
             done   = True
             reward = +100
-        return np.array(state, dtype=np.float32), reward, done, {}
+
+        self.l_x = self.target_margin(unscaled_state)
+        self.g_x = self.safety_margin(unscaled_state)
+        info = {"g_x": self.g_x, "l_x": self.l_x}
+        return np.array(state, dtype=np.float32), reward, done, info
+
+    def step(self, action):
+
+        state, _, done, info = self.parent_step(action)
+
+        fail = self.g_x > 0
+        success = self.l_x <= 0
+        reward = 1.0 * success - 5.0 * fail
+
+        return state, reward, done, info
 
     def render(self, mode='human'):
         from gym.envs.classic_control import rendering
