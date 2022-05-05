@@ -274,10 +274,10 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             pi_optimizer.zero_grad()
             loss_pi, pi_info = compute_loss_pi(data)
             kl = mpi_avg(pi_info['kl'])
-            # if kl > 1.5 * target_kl:
-            #     print("KL = ", kl, " | Target_KL = ", target_kl)
-            #     logger.log('Early stopping at grad step %d - reaching max kl.'%i)
-            #     break
+            if kl > 1.5 * target_kl:
+                print("KL = ", kl, " | Target_KL = ", target_kl)
+                logger.log('Early stopping at grad step %d - reaching max kl.'%i)
+                break
             loss_pi.backward()
             mpi_avg_grads(ac.pi)    # average grads across MPI processes
             pi_optimizer.step()
@@ -374,7 +374,7 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         if epoch % 25 == 0:
             # results = env.simulate_trajectories(
             #     ac.pi, T=local_steps_per_epoch // 10, num_rnd_traj=100)[1]
-            # env.visualize(ac.v, ac.pi)#, rndTraj=True)  # , T=local_steps_per_epoch)
+            env.visualize(ac.v, ac.pi)#, rndTraj=True)  # , T=local_steps_per_epoch)
             # print("Percent reached = ", np.sum(results == 1))
 
             # # Show policy in velocity 0 space.

@@ -86,7 +86,7 @@ class LunarLanderReachability(gym.Env, EzPickle):
 
     continuous = False
 
-    def __init__(self):
+    def __init__(self, device=torch.device("cpu")):
         EzPickle.__init__(self)
         self.seed()
         self.viewer = None
@@ -110,15 +110,20 @@ class LunarLanderReachability(gym.Env, EzPickle):
             # Nop, fire left engine, main engine, right engine
             self.action_space = spaces.Discrete(4)
 
+        # for torch
+        self.device = device
+
         self.param_dict = self._generate_param_dict({})
         self.initialize_simulator_variables(self.param_dict)
-        self.bounds_simulation_one_player = np.array([
+        self.bounds_simulation = np.array([
             [0, self.W],
             [0, self.H],
             [-self.vx_bound, self.vx_bound],
             [-self.vy_bound, self.vy_bound],
             [-self.theta_bound, self.theta_bound],
-            [-self.theta_dot_bound, self.theta_dot_bound]])
+            [-self.theta_dot_bound, self.theta_dot_bound],
+            [0, 1],
+            [0, 1]])
 
         self.reset()
 
@@ -236,6 +241,20 @@ class LunarLanderReachability(gym.Env, EzPickle):
             (self.helipad_x1, self.HELIPAD_Y)]
         self.target_xy_polygon = Polygon(self.polygon_target)
 
+        # Visualization params
+        self.one_player_obs_dim = 8
+        self.num_players = 1
+        self.axes = None
+        self.img_data = None
+        self.scaling_factor = 3.0
+        self.slices_y = np.array([1, 0, -1]) * self.scaling_factor
+        self.slices_x = np.array([-1, 0, 1]) * self.scaling_factor
+        self.vis_init_flag = True
+        self.visual_initial_states = [
+            np.array([self.midpoint_x + self.width_x/4,
+                      self.midpoint_y + self.width_y/4,
+                      0, 0, 0, 0], dtype=np.float64)] # In sim scale.
+
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
@@ -251,7 +270,7 @@ class LunarLanderReachability(gym.Env, EzPickle):
         self.world.DestroyBody(self.legs[0])
         self.world.DestroyBody(self.legs[1])
 
-    def reset(self, zero_vel=False):
+    def reset(self, state_in=None, zero_vel=False):
         self._destroy()
         self.world.contactListener_keepref = ContactDetector(self)
         self.world.contactListener = self.world.contactListener_keepref
@@ -260,8 +279,18 @@ class LunarLanderReachability(gym.Env, EzPickle):
 
         self.generate_terrain()
 
-        initial_y = VIEWPORT_H/SCALE
-        initial_state = self.rejection_sample(zero_vel=zero_vel)
+        if state_in is not None:
+            for ii in range(len(state_in)):
+                state_in[ii] = np.float64(
+                    min(state_in[ii], self.bounds_simulation[ii, 1]))
+                state_in[ii] = np.float64(
+                    max(state_in[ii], self.bounds_simulation[ii, 0]))
+            initial_state = state_in
+        else:
+            initial_state = self.rejection_sample(zero_vel=zero_vel)
+
+        # initial_y = VIEWPORT_H/SCALE
+        # initial_state = self.rejection_sample(zero_vel=zero_vel)
         assert isinstance(initial_state[0], np.float64), "Float64!"
         initial_x = initial_state[0]  # self.VIEWPORT_W/self.SCALE/2
         initial_y = initial_state[1]
@@ -382,8 +411,8 @@ class LunarLanderReachability(gym.Env, EzPickle):
                 break
         # Sample within simulation space bounds.
         state_in = np.random.uniform(
-            low=self.bounds_simulation_one_player[:, 0],
-            high=self.bounds_simulation_one_player[:, 1])
+            low=self.bounds_simulation[:, 0],
+            high=self.bounds_simulation[:, 1])
         state_in[:2] = xy_sample
         # If zero_vel active, remove any initial rates.
         if zero_vel:
@@ -585,10 +614,325 @@ class LunarLanderReachability(gym.Env, EzPickle):
 
         return self.viewer.render(return_rgb_array = mode=='rgb_array')
 
+    # ======================================================================= #
+    #                                                                         #
+    #                       FUNCTIONS FOR PLOTTING VALUES                     #
+    #                                                                         #
+    # ======================================================================= #
+
+    def simulate_one_trajectory(self, policy, T=10, state=None, init_q=False):
+        """
+        simulates one trajectory in observation scale.
+        """
+        if state is None:
+            state = self.reset()
+        else:
+            state = self.reset(state_in=state)
+        traj_x = [state[0]]
+        traj_y = [state[1]]
+        result = 0  # Not finished.
+        initial_q = None
+
+        for t in range(T):
+            state_sim = self.obs_scale_to_simulator_scale(state)
+            s_margin = self.safety_margin(state_sim)
+            t_margin = self.target_margin(state_sim)
+            # print("S_Margin: ", s_margin)
+            # print("T_Margin: ", t_margin)
+
+            state_tensor = torch.FloatTensor(state).to(self.device).unsqueeze(0)
+            if not self.continuous:
+                # action = policy(state_tensor).min(dim=1)[1].item()
+                # import pdb
+                # pdb.set_trace()
+                action = policy.logits_net(state_tensor).max(dim=1)[1].item()
+                # action = self.total_act_dim[action_index]
+                # if initial_q is None:
+                #     initial_q = policy(state_tensor).min(dim=1)[0].item()
+            else:
+                # action = policy(state_tensor).cpu().detach().numpy()[0]
+                action = policy.mu_net(state_tensor).detach()
+                # assert isinstance(action, np.ndarray), "Not numpy array for action!"
+
+            if s_margin > 0:
+                result = -1  # Failed.
+                break
+            elif t_margin <= 0:
+                result = 1  # Succeeded.
+                break
+
+            state, _, done, _ = self.step(action)
+            traj_x.append(state[0])
+            traj_y.append(state[1])
+            if done:
+                result = -1
+                break
+
+        # If the Lander get's 'stuck' in a hover position..
+        if result == 0:
+            result = -1
+
+        if init_q:
+            return traj_x, traj_y, result, initial_q
+        return traj_x, traj_y, result
+
+    def simulate_trajectories(self, policy, T=10, num_rnd_traj=None,
+                              states=None, *args, **kwargs):
+
+        assert ((num_rnd_traj is None and states is not None) or
+                (num_rnd_traj is not None and states is None) or
+                (len(states) == num_rnd_traj))
+        trajectories = []
+
+        if states is None:
+            results = np.empty(shape=(num_rnd_traj,), dtype=int)
+            for idx in range(num_rnd_traj):
+                traj_x, traj_y, result = self.simulate_one_trajectory(
+                    policy, T=T)
+                trajectories.append((traj_x, traj_y))
+                results[idx] = result
+        else:
+            results = np.empty(shape=(len(states),), dtype=int)
+            for idx, state in enumerate(states):
+                traj_x, traj_y, result = self.simulate_one_trajectory(
+                    policy, T=T, state=state)
+                trajectories.append((traj_x, traj_y))
+                results[idx] = result
+
+        return trajectories, results
+
+    def plot_trajectories(self, policy, T=10, num_rnd_traj=None, states=None,
+                          c='w', ax=None):
+        # plt.figure(2)
+        assert ((num_rnd_traj is None and states is not None) or
+                (num_rnd_traj is not None and states is None) or
+                (len(states) == num_rnd_traj))
+        # plt.clf()
+        if ax == None:
+            ax=plt.gca()
+        trajectories, results = self.simulate_trajectories(
+            policy, T=T, num_rnd_traj=num_rnd_traj, states=states)
+        for traj in trajectories:
+            traj_x, traj_y = traj
+            ax.scatter(traj_x[0], traj_y[0], s=24, c=c)
+            ax.plot(traj_x, traj_y, color=c, linewidth=2)
+
+        return results
+
+    def get_value(self, q_func, policy=None, nx=41, ny=121, x_dot=0, y_dot=0, theta=0, theta_dot=0,
+                  addBias=False):
+        v = np.zeros((nx, ny))
+        max_lg = np.zeros((nx, ny))
+        it = np.nditer(v, flags=['multi_index'])
+        xs = np.linspace(self.bounds_simulation[0, 0],
+                         self.bounds_simulation[0, 1], nx)
+        ys = np.linspace(self.bounds_simulation[1, 0],
+                         self.bounds_simulation[1, 1], ny)
+        # Convert slice simulation variables to observation scale.
+        (_, _, x_dot, y_dot,
+            theta, theta_dot, _, _) = self.simulator_scale_to_obs_scale(
+            np.array([0, 0, x_dot, y_dot, theta, theta_dot, 0, 0]))
+        # print("Start value collection on grid...")
+        while not it.finished:
+            idx = it.multi_index
+
+            x = xs[idx[0]]
+            y = ys[idx[1]]
+            l_x = self.target_margin(
+                self.obs_scale_to_simulator_scale(
+                    np.array([x, y, x_dot, y_dot, theta, theta_dot, 0, 0])))
+            g_x = self.safety_margin(
+                self.obs_scale_to_simulator_scale(
+                    np.array([x, y, x_dot, y_dot, theta, theta_dot, 0, 0])))
+
+            state = torch.FloatTensor(
+                [x, y, x_dot, y_dot, theta, theta_dot, 0, 0]).to(self.device)
+
+            v[idx] = q_func(state).item()
+            # v[idx] = max(g_x, min(l_x, v[idx]))
+            it.iternext()
+        # print("End value collection on grid.")
+        return v, xs, ys
+
+    def get_axes(self):
+        """ Gets the bounds for the environment.
+
+        Returns:
+            List containing a list of bounds for each state coordinate and a
+        """
+        aspect_ratio = (
+            (self.bounds_simulation[0, 1] - self.bounds_simulation[0, 0]) /
+            (self.bounds_simulation[1, 1] - self.bounds_simulation[1, 0]))
+        axes = np.array([self.bounds_simulation[0, 0] - 0.05,
+                         self.bounds_simulation[0, 1] + 0.05,
+                         self.bounds_simulation[1, 0] - 0.15,
+                         self.bounds_simulation[1, 1] + 0.15])
+        return [axes, aspect_ratio]
+
+    def imshow_lander(self, extent=None, alpha=0.4, ax=None):
+        if self.img_data is None:
+            # todo{vrubies} can we find way to supress gym window?
+            img_data = self.render(mode="rgb_array")
+            self.close()
+            self.img_data = img_data[::2, ::3, :]  # Reduce image size.
+        if ax == None:
+            ax=plt.gca()
+        ax.imshow(self.img_data,
+                   interpolation='none', extent=extent,
+                   origin='upper', alpha=alpha)
+
+    def visualize(self, q_func, policy=None, no_show=False,
+                  vmin=-50, vmax=50, nx=91, ny=91,
+                  labels=['', ''],
+                  boolPlot=False, plotZero=False,
+                  cmap='seismic', addBias=False, trueRAZero=False, lvlset=0):
+        """ Overlays analytic safe set on top of state value function.
+
+        Args:
+            v: State value function.
+        """
+        # plt.figure(1)
+        # plt.clf()
+        axStyle = self.get_axes()
+        numX = len(self.slices_x)
+        numY = len(self.slices_y)
+        if self.axes is None:
+            self.fig, self.axes = plt.subplots(
+                numX, numY, figsize=(2*numY, 2*numX), sharex=True, sharey=True)
+        # else:
+        #     self.fig.clf()
+        #     self.fig, self.axes = plt.subplots(
+        #         numX, numY, figsize=(2*numY, 2*numX), sharex=True, sharey=True)
+        for y_jj, y_dot in enumerate(self.slices_y):
+            for x_ii, x_dot in enumerate(self.slices_x):
+                ax = self.axes[y_jj][x_ii]
+                ax.cla()
+                # print("Subplot -> ", y_jj*len(self.slices_y)+x_ii+1)
+                v, xs, ys = self.get_value(q_func, policy=policy, nx=nx, ny=ny,
+                                           x_dot=x_dot, y_dot=y_dot, theta=0,
+                                           theta_dot=0, addBias=addBias)
+
+                #== Plot Value Function ==
+                if boolPlot:
+                    if trueRAZero:
+                        nx1 = nx
+                        ny1 = ny
+                        resultMtx = np.empty((nx1, ny1), dtype=int)
+                        xs = np.linspace(self.bounds_simulation[0, 0],
+                                         self.bounds_simulation[0, 1], nx1)
+                        ys = np.linspace(self.bounds_simulation[1, 0],
+                                         self.bounds_simulation[1, 1], ny1)
+
+                        it = np.nditer(resultMtx, flags=['multi_index'])
+                        while not it.finished:
+                            idx = it.multi_index
+                            x = xs[idx[0]]
+                            y = ys[idx[1]]
+
+                            state = np.array([x, y, x_dot, y_dot, 0, 0])
+                            (traj_x, traj_y,
+                                result) = self.simulate_one_trajectory(
+                                q_func, policy=policy, T=400, state=state)
+
+                            resultMtx[idx] = result
+                            it.iternext()
+                        im = ax.imshow(resultMtx.T != 1,
+                                        interpolation='none', extent=axStyle[0],
+                                        origin="lower", cmap=cmap)
+                    else:
+                        im = ax.imshow(v.T > lvlset,
+                                        interpolation='none', extent=axStyle[0],
+                                        origin="lower", cmap=cmap)
+                    X, Y = np.meshgrid(xs, ys)
+                    ax.contour(X, Y, v.T, levels=[-0.1], colors=('k',),
+                               linestyles=('--',), linewidths=(1,))
+                else:
+                    vmin = np.min(v)
+                    vmax = np.max(v)
+                    vstar = max(abs(vmin), vmax)
+                    im = ax.imshow(v.T,
+                                    interpolation='none', extent=axStyle[0],
+                                    origin="lower", cmap=cmap, vmin=-vstar,
+                                    vmax=vstar)
+                    X, Y = np.meshgrid(xs, ys)
+                    ax.contour(X, Y, v.T, levels=[-0.1], colors=('k',),
+                               linestyles=('--',), linewidths=(1,))
+
+                #  == Plot Environment ==
+                self.imshow_lander(extent=axStyle[0], alpha=0.4, ax=ax)
+
+
+                _ = self.plot_trajectories(policy, T=100, states=self.visual_initial_states, ax=ax)
+
+                ax.axis(axStyle[0])
+                ax.grid(False)
+                ax.set_aspect(axStyle[1])  # makes equal aspect ratio
+                if labels is not None:
+                    ax.set_xlabel(labels[0], fontsize=52)
+                    ax.set_ylabel(labels[1], fontsize=52)
+
+                ax.tick_params(axis='both', which='both',  # both x and y axes, both major and minor ticks are affected
+                               bottom=False, top=False,    # ticks along the top and bottom edges are off
+                               left=False, right=False)    # ticks along the left and right edges are off
+                ax.set_xticklabels([])
+                ax.set_yticklabels([])
+                if trueRAZero:
+                    return
+        plt.tight_layout()
+
+        if not no_show:
+            plt.pause(0.1)
+
     def close(self):
         if self.viewer is not None:
             self.viewer.close()
             self.viewer = None
+
+    # =========== Methods for conversions (BEGIN).
+    def simulator_scale_to_obs_scale_single(self, state):
+        copy_state = np.copy(state)
+        chg_dims = self.one_player_obs_dim
+        x, y, x_dot, y_dot, theta, theta_dot, _, _ = copy_state[:chg_dims]
+        copy_state[:chg_dims] = np.array([
+            (x - self.W / 2) / (self.W / 2),
+            (y - (self.HELIPAD_Y + self.LEG_DOWN/self.SCALE)) / (self.H / 2),
+            x_dot * (self.W / 2) / self.FPS,
+            y_dot * (self.H / 2) / self.FPS,
+            theta,
+            20.0*theta_dot / self.FPS, 0, 0], dtype=np.float32)  # theta_dot])
+        return copy_state
+
+    def simulator_scale_to_obs_scale(self, state):
+        copy_state = np.copy(state)
+        chg_dims = self.one_player_obs_dim
+        for ii in range(self.num_players):
+            copy_state[ii*chg_dims:(ii+1)*chg_dims] = (
+                self.simulator_scale_to_obs_scale_single(
+                    copy_state[ii*chg_dims:(ii+1)*chg_dims]))
+        return copy_state
+
+    def obs_scale_to_simulator_scale_single(self, state):
+        copy_state = np.copy(state)
+        chg_dims = self.one_player_obs_dim
+        x, y, x_dot, y_dot, theta, theta_dot, _, _ = copy_state[:chg_dims]
+        copy_state[:chg_dims] = np.array([
+            (x * (self.W / 2)) + (self.W / 2),
+            (y * (self.H / 2)) + (self.HELIPAD_Y + self.LEG_DOWN/self.SCALE),
+            x_dot / ((self.W / 2) / self.FPS),
+            y_dot / ((self.H / 2) / self.FPS),
+            theta,
+            theta_dot * self.FPS / 20.0, 0, 0], dtype=np.float64)  # theta_dot])
+        return copy_state
+
+    def obs_scale_to_simulator_scale(self, state):
+        copy_state = np.copy(state)
+        chg_dims = self.one_player_obs_dim
+        for ii in range(self.num_players):
+            copy_state[ii*chg_dims:(ii+1)*chg_dims] = (
+                self.obs_scale_to_simulator_scale_single(
+                    copy_state[ii*chg_dims:(ii+1)*chg_dims]))
+        return copy_state
+    # =========== Methods for conversions (END).
 
 class LunarLanderContinuous(LunarLanderReachability):
     continuous = True
