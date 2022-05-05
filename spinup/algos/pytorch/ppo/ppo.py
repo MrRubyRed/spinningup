@@ -361,7 +361,7 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             # fig, ax = plt.subplots(figsize=(12, 7))
             s_trajs = []
             total_reward = 0
-            o = env.reset()#state_in=env.visual_initial_states[0])
+            o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
             tmp_int = 0
             tmp_ii = 0
             while True:
@@ -380,9 +380,8 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 if done or tmp_ii > 1000:
                   tmp_ii = 0
                   # o = env.reset()
-                  o = env.reset()#state_in=env.visual_initial_states[0])
-                  print(tmp_int)
-                  if tmp_int > 3:
+                  o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
+                  if tmp_int > 10:
                     break
                   else:
                     tmp_int += 1

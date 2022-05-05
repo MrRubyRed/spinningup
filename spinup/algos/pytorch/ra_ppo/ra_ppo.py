@@ -387,17 +387,17 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             # fig, ax = plt.subplots(figsize=(12, 7))
             s_trajs = []
             total_reward = 0
-            o = env.reset(state_in=env.visual_initial_states[0])
+            o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
             tmp_int = 0
             tmp_ii = 0
             while True:
                 action, _, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
                 o, r, done, info = env.step(action)
-                state_sim = env.obs_scale_to_simulator_scale(s)
-                s_margin = env.safety_margin(state_sim)
-                t_margin = env.target_margin(state_sim)
-                print("S_Margin: ", s_margin, " | T_Margin: ", t_margin)
-                s_trajs.append([s[0], s[1]])
+                # state_sim = env.obs_scale_to_simulator_scale(s)
+                # s_margin = env.safety_margin(state_sim)
+                # t_margin = env.target_margin(state_sim)
+                # print("S_Margin: ", s_margin, " | T_Margin: ", t_margin, " | reward: ", r)
+                # s_trajs.append([s[0], s[1]])
                 total_reward += r
                 tmp_ii += 1
 
@@ -406,8 +406,8 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
                 if done or tmp_ii > 1000:
                   tmp_ii = 0
                   # o = env.reset()
-                  o = env.reset(state_in=env.visual_initial_states[0])
-                  if tmp_int > 1:
+                  o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
+                  if tmp_int > 10:
                     break
                   else:
                     tmp_int += 1

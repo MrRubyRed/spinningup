@@ -146,8 +146,8 @@ class LunarLanderReachability(gym.Env, EzPickle):
         param_dict["INITIAL_RANDOM"] = 1000.0
         param_dict["LIDAR_RANGE"] = 500
 
-        param_dict["vx_bound"] = 10
-        param_dict["vy_bound"] = 10
+        param_dict["vx_bound"] = 3
+        param_dict["vy_bound"] = 3
         param_dict["theta_bound"] = np.radians(45)
         param_dict["theta_dot_bound"] = np.radians(10)
 
@@ -251,7 +251,7 @@ class LunarLanderReachability(gym.Env, EzPickle):
         self.world.DestroyBody(self.legs[0])
         self.world.DestroyBody(self.legs[1])
 
-    def reset(self):
+    def reset(self, zero_vel=False):
         self._destroy()
         self.world.contactListener_keepref = ContactDetector(self)
         self.world.contactListener = self.world.contactListener_keepref
@@ -261,7 +261,7 @@ class LunarLanderReachability(gym.Env, EzPickle):
         self.generate_terrain()
 
         initial_y = VIEWPORT_H/SCALE
-        initial_state = self.rejection_sample()
+        initial_state = self.rejection_sample(zero_vel=zero_vel)
         assert isinstance(initial_state[0], np.float64), "Float64!"
         initial_x = initial_state[0]  # self.VIEWPORT_W/self.SCALE/2
         initial_y = initial_state[1]
@@ -413,8 +413,8 @@ class LunarLanderReachability(gym.Env, EzPickle):
 
     def target_margin(self, state):
         # States come in sim_space.
-        if not self.parent_init:
-            return 0
+        # if not self.parent_init:
+        #     return 0
         x = state[0]
         y = state[1]
         vx = state[2]
@@ -429,8 +429,8 @@ class LunarLanderReachability(gym.Env, EzPickle):
 
     def safety_margin(self, state):
         # States come in sim_space.
-        if not self.parent_init:
-            return 0
+        # if not self.parent_init:
+        #     return 0
         x = state[0]
         y = state[1]
         p = Point(x, y)
@@ -540,7 +540,8 @@ class LunarLanderReachability(gym.Env, EzPickle):
 
         fail = self.g_x > 0
         success = self.l_x <= 0
-        reward = 1.0 * success - 5.0 * fail
+        reward = 1.0 * success - 5.0 * fail - 0.0001
+        done = fail or success or done
 
         return state, reward, done, info
 
@@ -580,6 +581,7 @@ class LunarLanderReachability(gym.Env, EzPickle):
             self.viewer.draw_polygon( [(x, flagy2), (x, flagy2-10/SCALE), (x+25/SCALE, flagy2-5/SCALE)], color=(0.8,0.8,0) )
 
         self.viewer.draw_polyline(self.paint_obstacle, color=(1, 0, 0), linewidth=10)
+        self.viewer.draw_polyline(self.polygon_target, color=(0, 1, 0), linewidth=10)
 
         return self.viewer.render(return_rgb_array = mode=='rgb_array')
 
