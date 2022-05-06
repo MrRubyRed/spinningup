@@ -253,6 +253,12 @@ class LunarLanderReachability(gym.Env, EzPickle):
         self.visual_initial_states = [
             np.array([self.midpoint_x + self.width_x/4,
                       self.midpoint_y + self.width_y/4,
+                      0, 0, 0, 0], dtype=np.float64),
+            np.array([self.midpoint_x + self.width_x/3,
+                      self.midpoint_y - self.width_y/4,
+                      0, 0, 0, 0], dtype=np.float64),
+            np.array([self.midpoint_x - self.width_x/3,
+                      self.midpoint_y - self.width_y/4,
                       0, 0, 0, 0], dtype=np.float64)] # In sim scale.
 
     def seed(self, seed=None):
@@ -864,7 +870,7 @@ class LunarLanderReachability(gym.Env, EzPickle):
                 self.imshow_lander(extent=axStyle[0], alpha=0.4, ax=ax)
 
 
-                _ = self.plot_trajectories(policy, T=100, states=self.visual_initial_states, ax=ax)
+                _ = self.plot_trajectories(policy, T=1000, states=self.visual_initial_states, ax=ax)
 
                 ax.axis(axStyle[0])
                 ax.grid(False)
