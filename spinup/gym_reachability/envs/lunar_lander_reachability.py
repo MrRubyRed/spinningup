@@ -628,8 +628,8 @@ class LunarLanderReachability(gym.Env, EzPickle):
             state = self.reset()
         else:
             state = self.reset(state_in=state)
-        traj_x = [state[0]]
-        traj_y = [state[1]]
+        traj_x = []
+        traj_y = []
         result = 0  # Not finished.
         initial_q = None
 
@@ -662,8 +662,8 @@ class LunarLanderReachability(gym.Env, EzPickle):
                 break
 
             state, _, done, _ = self.step(action)
-            traj_x.append(state[0])
-            traj_y.append(state[1])
+            traj_x.append(state_sim[0])
+            traj_y.append(state_sim[1])
             if done:
                 result = -1
                 break
@@ -736,14 +736,16 @@ class LunarLanderReachability(gym.Env, EzPickle):
         while not it.finished:
             idx = it.multi_index
 
-            x = xs[idx[0]]
-            y = ys[idx[1]]
-            l_x = self.target_margin(
-                self.obs_scale_to_simulator_scale(
-                    np.array([x, y, x_dot, y_dot, theta, theta_dot, 0, 0])))
-            g_x = self.safety_margin(
-                self.obs_scale_to_simulator_scale(
-                    np.array([x, y, x_dot, y_dot, theta, theta_dot, 0, 0])))
+            x = (xs[idx[0]] - self.W / 2) / (self.W / 2)
+            y = (ys[idx[1]] - (self.HELIPAD_Y +
+                               self.LEG_DOWN/self.SCALE)) / (self.H / 2)
+
+            # l_x = self.target_margin(
+            #     self.obs_scale_to_simulator_scale(
+            #         np.array([x, y, x_dot, y_dot, theta, theta_dot, 0, 0])))
+            # g_x = self.safety_margin(
+            #     self.obs_scale_to_simulator_scale(
+            #         np.array([x, y, x_dot, y_dot, theta, theta_dot, 0, 0])))
 
             state = torch.FloatTensor(
                 [x, y, x_dot, y_dot, theta, theta_dot, 0, 0]).to(self.device)
