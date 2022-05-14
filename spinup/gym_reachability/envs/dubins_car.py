@@ -413,7 +413,7 @@ class DubinsCarEnv(gym.Env):
             if addBias:
                 v[idx] = q_func(state).min(dim=1)[0].item() + max(l_x, g_x)
             else:
-                v[idx] = q_func(state).item()
+                v[idx] = max(g_x, min(l_x, q_func(state).item()))
             it.iternext()
         return v
 
@@ -595,6 +595,12 @@ class DubinsCarEnv(gym.Env):
             if cbarPlot:
                 cbar = fig.colorbar(im, ax=ax, pad=0.01, fraction=0.05, shrink=.95, ticks=[vmin, 0, vmax])
                 cbar.ax.set_yticklabels(labels=[vmin, 0, vmax], fontsize=24)
+
+        xs = np.linspace(self.bounds[0,0], self.bounds[0,1], nx)
+        ys = np.linspace(self.bounds[1,0], self.bounds[1,1], ny)
+        X, Y = np.meshgrid(xs, ys)
+        ax.contour(X, Y, v.T, levels=[-0.01], colors=('k',),
+                   linestyles=('--',), linewidths=(1,))
 
     def plot_trajectories(  self, q_func, T=10, num_rnd_traj=None, states=None, theta=None,
                             toEnd=False, ax=None, c='y', lw=1.5, orientation=0):

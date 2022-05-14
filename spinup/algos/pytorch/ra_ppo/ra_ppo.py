@@ -80,11 +80,12 @@ class RA_PPOBuffer:
         # deltas = (rews[:-1] + self.gamma * vals[1:]) - vals[:-1]
         # self.adv_buf[path_slice] = core.discount_cumsum(deltas, self.gamma * self.lam)
         self.adv_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, self.gamma, v=vals[-1]) - vals[:-1]
+        # self.adv_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, 1.0, v=vals[-1]) - vals[:-1]
         # self.adv_buf[path_slice] = core.discount_min_overtime(l_xs, self.gamma)
 
         # the next line computes rewards-to-go, to be targets for the value function
         # self.ret_buf[path_slice] = self.adv_buf[path_slice].copy()
-        self.ret_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, 1.0, v=vals[-1])#[:-1]
+        self.ret_buf[path_slice] = core.discount_minmax_overtime(l_xs, g_xs, self.gamma, v=vals[-1])#[:-1]
         # self.ret_buf[path_slice] = core.discount_cumsum(rews, self.gamma)[:-1]
 
         self.path_start_idx = self.ptr
@@ -235,7 +236,6 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         pi, logp = ac.pi(obs, act)
         ratio = torch.exp(logp - logp_old)
         clip_adv = torch.clamp(ratio, 1-clip_ratio, 1+clip_ratio) * adv
-        # TODO: Max or Min???????
         loss_pi = (torch.max(ratio * adv, clip_adv)).mean() # Removed "-" since we are minimizing.
         # loss_pi = (logp * adv).mean()  # Removed "-" since we are minimizing.
 
@@ -308,11 +308,14 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
 
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
+        num_resets = 0
         for t in range(local_steps_per_epoch):
             a, v, logp = ac.step(torch.as_tensor(o, dtype=torch.float32))
 
             next_o, r, d, info = env.step(a)
             assert ("g_x" in info and "l_x" in info)
+            # Correct the values just in case.
+            v = max(info["g_x"], min(info["l_x"], v))
 
             # Used for logging.
             max_viol = max(max_viol, info["g_x"])
@@ -348,6 +351,7 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
                     # only save EpRet / EpLen if trajectory finished
                     logger.store(EpRet=ep_ret, EpLen=ep_len)
                 o, ep_ret, max_viol, ep_len = env.reset(), np.inf, -np.inf, 0
+                num_resets += 1
 
 
         # Save model.
@@ -369,9 +373,10 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         logger.log_tabular('DeltaLossV', average_only=True)
         logger.log_tabular('Entropy', average_only=True)
         logger.log_tabular('KL', average_only=True)
+        logger.log_tabular('NumResets', num_resets)
         logger.log_tabular('Time', time.time()-start_time)
         logger.dump_tabular()
-        if epoch % 25 == 0:
+        if (epoch % 25 == 0) and (epoch > 0):
             # results = env.simulate_trajectories(
             #     ac.pi, T=local_steps_per_epoch // 10, num_rnd_traj=100)[1]
             env.visualize(ac.v, ac.pi)#, rndTraj=True)  # , T=local_steps_per_epoch)
@@ -381,36 +386,36 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             # env.scatter_actions(ac.pi, num_states=200)
             # plt.show()
 
-            print(ac.pi.logits_net[0].weight[:6])
+            # print(ac.pi.logits_net[0].weight[:6])
 
-            my_images = []
-            # fig, ax = plt.subplots(figsize=(12, 7))
-            s_trajs = []
-            total_reward = 0
-            o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
-            tmp_int = 0
-            tmp_ii = 0
-            while True:
-                action, _, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
-                o, r, done, info = env.step(action)
-                # state_sim = env.obs_scale_to_simulator_scale(s)
-                # s_margin = env.safety_margin(state_sim)
-                # t_margin = env.target_margin(state_sim)
-                # print("S_Margin: ", s_margin, " | T_Margin: ", t_margin, " | reward: ", r)
-                # s_trajs.append([s[0], s[1]])
-                total_reward += r
-                tmp_ii += 1
+            # my_images = []
+            # # fig, ax = plt.subplots(figsize=(12, 7))
+            # s_trajs = []
+            # total_reward = 0
+            # o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
+            # tmp_int = 0
+            # tmp_ii = 0
+            # while True:
+            #     action, _, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
+            #     o, r, done, info = env.step(action)
+            #     # state_sim = env.obs_scale_to_simulator_scale(s)
+            #     # s_margin = env.safety_margin(state_sim)
+            #     # t_margin = env.target_margin(state_sim)
+            #     # print("S_Margin: ", s_margin, " | T_Margin: ", t_margin, " | reward: ", r)
+            #     # s_trajs.append([s[0], s[1]])
+            #     total_reward += r
+            #     tmp_ii += 1
 
-                my_images.append(env.render(mode="rgb_array"))
+            #     my_images.append(env.render(mode="rgb_array"))
 
-                if done or tmp_ii > 1000:
-                  tmp_ii = 0
-                  # o = env.reset()
-                  o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
-                  if tmp_int > 10:
-                    break
-                  else:
-                    tmp_int += 1
+            #     if done or tmp_ii > 1000:
+            #       tmp_ii = 0
+            #       # o = env.reset()
+            #       o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
+            #       if tmp_int > 10:
+            #         break
+            #       else:
+            #         tmp_int += 1
 
 if __name__ == '__main__':
     import argparse

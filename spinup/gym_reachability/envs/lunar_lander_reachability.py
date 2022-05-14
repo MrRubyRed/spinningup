@@ -266,15 +266,16 @@ class LunarLanderReachability(gym.Env, EzPickle):
         return [seed]
 
     def _destroy(self):
+        if not self.lander: return
+        self.world.DestroyBody(self.lander)
+        self.lander = None
+        self.world.DestroyBody(self.legs[0])
+        self.world.DestroyBody(self.legs[1])
         if not self.moon: return
         self.world.contactListener = None
         self._clean_particles(True)
         self.world.DestroyBody(self.moon)
         self.moon = None
-        self.world.DestroyBody(self.lander)
-        self.lander = None
-        self.world.DestroyBody(self.legs[0])
-        self.world.DestroyBody(self.legs[1])
 
     def reset(self, state_in=None, zero_vel=False):
         self._destroy()
@@ -356,7 +357,14 @@ class LunarLanderReachability(gym.Env, EzPickle):
 
         self.drawlist = [self.lander] + self.legs
 
-        return self.step(np.array([0,0]) if self.continuous else 0)[0]
+        s_ = self.step(np.array([0,0]) if self.continuous else 0)[0]
+
+        self.world.contactListener = None
+        self._clean_particles(True)
+        self.world.DestroyBody(self.moon)
+        self.moon = None
+
+        return s_
 
     def generate_terrain(self, terrain_polyline=None):
         # terrain
@@ -460,7 +468,7 @@ class LunarLanderReachability(gym.Env, EzPickle):
         inside = 2*self.target_xy_polygon.contains(p) - 1
         vel_l = speed - self.vy_bound/10.0
         # return max(-inside*L2_distance, vel_l)
-        return -inside*L2_distance
+        return -inside*L2_distance*10.0
 
     def safety_margin(self, state):
         # States come in sim_space.
@@ -471,7 +479,7 @@ class LunarLanderReachability(gym.Env, EzPickle):
         p = Point(x, y)
         L2_distance = self.obstacle_polyline.exterior.distance(p)
         inside = 2*self.obstacle_polyline.contains(p) - 1
-        return -inside*L2_distance
+        return -inside*L2_distance*10.0
 
     def parent_step(self, action):
         if self.continuous:
@@ -576,7 +584,7 @@ class LunarLanderReachability(gym.Env, EzPickle):
         fail = self.g_x > 0
         success = self.l_x <= 0
         reward = 1.0 * success - 5.0 * fail - 0.0001
-        done = fail or success or done
+        done = fail # or success or done
 
         return state, reward, done, info
 
@@ -735,8 +743,8 @@ class LunarLanderReachability(gym.Env, EzPickle):
         ys = np.linspace(self.bounds_simulation[1, 0],
                          self.bounds_simulation[1, 1], ny)
         # Convert slice simulation variables to observation scale.
-        (_, _, x_dot, y_dot,
-            theta, theta_dot, _, _) = self.simulator_scale_to_obs_scale(
+        (_, _, x_dot_, y_dot_,
+            theta_, theta_dot_, _, _) = self.simulator_scale_to_obs_scale(
             np.array([0, 0, x_dot, y_dot, theta, theta_dot, 0, 0]))
         # print("Start value collection on grid...")
         while not it.finished:
@@ -752,10 +760,17 @@ class LunarLanderReachability(gym.Env, EzPickle):
             # g_x = self.safety_margin(
             #     self.obs_scale_to_simulator_scale(
             #         np.array([x, y, x_dot, y_dot, theta, theta_dot, 0, 0])))
+            l_x = self.target_margin(
+                    np.array([xs[idx[0]], ys[idx[1]], x_dot, y_dot, theta,
+                              theta_dot, 0, 0]))
+            g_x = self.safety_margin(
+                    np.array([xs[idx[0]], ys[idx[1]], x_dot, y_dot, theta,
+                              theta_dot, 0, 0]))
 
             state = torch.FloatTensor(
-                [x, y, x_dot, y_dot, theta, theta_dot, 0, 0]).to(self.device)
+                [x, y, x_dot_, y_dot_, theta_, theta_dot_, 0, 0]).to(self.device)
 
+            # v[idx] = max(g_x, min(l_x, q_func(state).item()))
             v[idx] = q_func(state).item()
             # v[idx] = max(g_x, min(l_x, v[idx]))
             it.iternext()
@@ -869,7 +884,9 @@ class LunarLanderReachability(gym.Env, EzPickle):
                 #  == Plot Environment ==
                 self.imshow_lander(extent=axStyle[0], alpha=0.4, ax=ax)
 
-
+                new_visual_states = self.visual_initial_states.copy()
+                for s in new_visual_states:
+                    s[2], s[3] = x_dot, y_dot
                 _ = self.plot_trajectories(policy, T=1000, states=self.visual_initial_states, ax=ax)
 
                 ax.axis(axStyle[0])

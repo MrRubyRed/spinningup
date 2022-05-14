@@ -1,2 +1,3 @@
 ## ISSUES ##
-1.) What if we restrict range of theta between (0 - 30 deg.)
+1.) After removing the moon (changes in reset) and setting the done flag to fail
+	only, time between epochs has substantially increased.

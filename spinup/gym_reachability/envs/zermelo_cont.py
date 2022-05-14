@@ -490,7 +490,7 @@ class ZermeloContEnv(gym.Env):
             if addBias:
                 v[idx] = q_func(state,action).item() #+ max(l_x, g_x)
             else:
-                v[idx] = q_func(state).item()
+                v[idx] = max(g_x, min(l_x, q_func(state).item()))
             it.iternext()
         return v
 
@@ -592,7 +592,7 @@ class ZermeloContEnv(gym.Env):
 
     def visualize(  self, q_func, policy,
                     vmin=-1, vmax=1, nx=81, ny=241, cmap='seismic',
-                    labels=['', ''], boolPlot=False, addBias=False, T=50):
+                    labels=['', ''], boolPlot=False, addBias=False, T=300):
         """ Overlays analytic safe set on top of state value function.
 
         Args:
@@ -642,6 +642,12 @@ class ZermeloContEnv(gym.Env):
                 cbar = fig.colorbar(im, ax=ax, pad=0.01, fraction=0.05,
                     shrink=.95, ticks=[vmin, 0, vmax])
                 cbar.ax.set_yticklabels(labels=[vmin, 0, vmax], fontsize=24)
+
+        xs = np.linspace(self.bounds[0,0], self.bounds[0,1], nx)
+        ys = np.linspace(self.bounds[1,0], self.bounds[1,1], ny)
+        X, Y = np.meshgrid(xs, ys)
+        ax.contour(X, Y, v.T, levels=[-0.01], colors=('k',),
+                   linestyles=('--',), linewidths=(1,))
 
 
     def plot_trajectories(self, policy, T=200, num_rnd_traj=None, states=None,
