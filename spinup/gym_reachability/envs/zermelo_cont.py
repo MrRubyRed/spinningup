@@ -333,6 +333,10 @@ class ZermeloContEnv(gym.Env):
         target_margin = box4_target_margin
         return self.scaling * target_margin
 
+    def get_margins(self, obs):
+        s_margin = self.safety_margin(obs)
+        t_margin = self.target_margin(obs)
+        return t_margin, s_margin
 
     def set_costParam(self, penalty=1, reward=-1, costType='normal',
         scaling=1.):
@@ -490,7 +494,9 @@ class ZermeloContEnv(gym.Env):
             if addBias:
                 v[idx] = q_func(state,action).item() #+ max(l_x, g_x)
             else:
-                v[idx] = max(g_x, min(l_x, q_func(state).item()))
+                # v[idx] = max(g_x, min(l_x, q_func(state).item()))
+                d = q_func(state).item()
+                v[idx] = d*l_x + (1.0 - d)*g_x
             it.iternext()
         return v
 

@@ -102,7 +102,8 @@ class RA_PPOBuffer:
         adv_mean, adv_std = mpi_statistics_scalar(self.adv_buf)
         self.adv_buf = (self.adv_buf - adv_mean) / (adv_std + 1e-7)
         data = dict(obs=self.obs_buf, act=self.act_buf, ret=self.ret_buf,
-                    adv=self.adv_buf, logp=self.logp_buf)
+                    adv=self.adv_buf, logp=self.logp_buf, l_x=self.l_x_buf,
+                    g_x=self.g_x_buf)
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in data.items()}
 
 
@@ -228,6 +229,31 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
     local_steps_per_epoch = int(steps_per_epoch / num_procs())
     buf = RA_PPOBuffer(obs_dim, act_dim, local_steps_per_epoch, gamma, lam)
 
+    def warm_start():
+        pass
+        # Get examples
+        x = np.zeros(core.combined_shape(4000, obs_dim), dtype=np.float32)
+        y = np.zeros(4000, dtype=np.float32)
+        for i in range(4000):
+            o = env.reset()
+            state_sim = env.obs_scale_to_simulator_scale(o)
+            s_margin = env.safety_margin(state_sim)
+            t_margin = env.target_margin(state_sim)
+            x[i] = o
+            y[i] = s_margin
+        data = dict(obs=x, ret=y)
+        data = {k: torch.as_tensor(v, dtype=torch.float32) for k,v in data.items()}
+        # Value function learning
+        for i in range(25000):
+            vf_optimizer.zero_grad()
+            loss_v = compute_loss_v(data)
+            if i % 500 == 0:
+                print(loss_v)
+            loss_v.backward()
+            mpi_avg_grads(ac.v)    # average grads across MPI processes
+            vf_optimizer.step()
+        print(loss_v)
+
     # Set up function for computing VPG policy loss
     def compute_loss_pi(data):
         obs, act, adv, logp_old = data['obs'], data['act'], data['adv'], data['logp']
@@ -251,7 +277,10 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
     # Set up function for computing value loss
     def compute_loss_v(data):
         obs, ret = data['obs'], data['ret']
-        return ((ac.v(obs) - ret)**2).mean()
+        l_x, g_x = data['l_x'], data['g_x']
+        d = ac.v(obs)
+        output = d*l_x + (1.0-d)*g_x
+        return ((output - ret)**2).mean()
 
     # Set up optimizers for policy and value function
     pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
@@ -306,8 +335,13 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
     max_viol = -np.inf
     ep_len = 0
 
+    # Warm start
+    # warm_start()
+
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
+        if epoch % 25 == 0:
+            env.visualize(ac.v, ac.pi)
         num_resets = 0
         for t in range(local_steps_per_epoch):
             a, v, logp = ac.step(torch.as_tensor(o, dtype=torch.float32))
@@ -315,7 +349,8 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
             next_o, r, d, info = env.step(a)
             assert ("g_x" in info and "l_x" in info)
             # Correct the values just in case.
-            v = max(info["g_x"], min(info["l_x"], v))
+            # v = max(info["g_x"], min(info["l_x"], v))
+            v = v*info["l_x"] + (1.0-v)*info["g_x"]
 
             # Used for logging.
             max_viol = max(max_viol, info["g_x"])
@@ -339,7 +374,9 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
                 # if trajectory didn't reach terminal state, bootstrap value target
                 if timeout or epoch_ended:
                     _, v, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
-                    v = max(info["g_x"], min(v, info["l_x"]))
+                    t_margin, s_margin = env.get_margins(o)
+                    # v = max(s_margin, min(v, t_margin))
+                    v = v*t_margin + (1.0-v)*s_margin
                     # buf.finish_path(v)
                     # print("uno")
                 else:
@@ -376,46 +413,46 @@ def ra_ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),  seed=0,
         logger.log_tabular('NumResets', num_resets)
         logger.log_tabular('Time', time.time()-start_time)
         logger.dump_tabular()
-        if (epoch % 25 == 0) and (epoch > 0):
-            # results = env.simulate_trajectories(
-            #     ac.pi, T=local_steps_per_epoch // 10, num_rnd_traj=100)[1]
-            env.visualize(ac.v, ac.pi)#, rndTraj=True)  # , T=local_steps_per_epoch)
-            # print("Percent reached = ", np.sum(results == 1))
+        # if (epoch % 25 == 0) and (epoch > 0):
+        #     # results = env.simulate_trajectories(
+        #     #     ac.pi, T=local_steps_per_epoch // 10, num_rnd_traj=100)[1]
+        #     env.visualize(ac.v, ac.pi)#, rndTraj=True)  # , T=local_steps_per_epoch)
+        #     # print("Percent reached = ", np.sum(results == 1))
 
-            # # Show policy in velocity 0 space.
-            # env.scatter_actions(ac.pi, num_states=200)
-            # plt.show()
+        #     # # Show policy in velocity 0 space.
+        #     # env.scatter_actions(ac.pi, num_states=200)
+        #     # plt.show()
 
-            # print(ac.pi.logits_net[0].weight[:6])
+        #     # print(ac.pi.logits_net[0].weight[:6])
 
-            # my_images = []
-            # # fig, ax = plt.subplots(figsize=(12, 7))
-            # s_trajs = []
-            # total_reward = 0
-            # o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
-            # tmp_int = 0
-            # tmp_ii = 0
-            # while True:
-            #     action, _, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
-            #     o, r, done, info = env.step(action)
-            #     # state_sim = env.obs_scale_to_simulator_scale(s)
-            #     # s_margin = env.safety_margin(state_sim)
-            #     # t_margin = env.target_margin(state_sim)
-            #     # print("S_Margin: ", s_margin, " | T_Margin: ", t_margin, " | reward: ", r)
-            #     # s_trajs.append([s[0], s[1]])
-            #     total_reward += r
-            #     tmp_ii += 1
+        #     # my_images = []
+        #     # # fig, ax = plt.subplots(figsize=(12, 7))
+        #     # s_trajs = []
+        #     # total_reward = 0
+        #     # o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
+        #     # tmp_int = 0
+        #     # tmp_ii = 0
+        #     # while True:
+        #     #     action, _, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
+        #     #     o, r, done, info = env.step(action)
+        #     #     # state_sim = env.obs_scale_to_simulator_scale(s)
+        #     #     # s_margin = env.safety_margin(state_sim)
+        #     #     # t_margin = env.target_margin(state_sim)
+        #     #     # print("S_Margin: ", s_margin, " | T_Margin: ", t_margin, " | reward: ", r)
+        #     #     # s_trajs.append([s[0], s[1]])
+        #     #     total_reward += r
+        #     #     tmp_ii += 1
 
-            #     my_images.append(env.render(mode="rgb_array"))
+        #     #     my_images.append(env.render(mode="rgb_array"))
 
-            #     if done or tmp_ii > 1000:
-            #       tmp_ii = 0
-            #       # o = env.reset()
-            #       o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
-            #       if tmp_int > 10:
-            #         break
-            #       else:
-            #         tmp_int += 1
+        #     #     if done or tmp_ii > 1000:
+        #     #       tmp_ii = 0
+        #     #       # o = env.reset()
+        #     #       o = env.reset(zero_vel=True)#state_in=env.visual_initial_states[0])
+        #     #       if tmp_int > 10:
+        #     #         break
+        #     #       else:
+        #     #         tmp_int += 1
 
 if __name__ == '__main__':
     import argparse

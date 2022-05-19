@@ -733,6 +733,12 @@ class LunarLanderReachability(gym.Env, EzPickle):
 
         return results
 
+    def get_margins(self, obs):
+        state_sim = env.obs_scale_to_simulator_scale(obs)
+        s_margin = env.safety_margin(state_sim)
+        t_margin = env.target_margin(state_sim)
+        return t_margin, s_margin
+
     def get_value(self, q_func, policy=None, nx=41, ny=121, x_dot=0, y_dot=0, theta=0, theta_dot=0,
                   addBias=False):
         v = np.zeros((nx, ny))
@@ -771,7 +777,9 @@ class LunarLanderReachability(gym.Env, EzPickle):
                 [x, y, x_dot_, y_dot_, theta_, theta_dot_, 0, 0]).to(self.device)
 
             # v[idx] = max(g_x, min(l_x, q_func(state).item()))
-            v[idx] = q_func(state).item()
+            d = q_func(state).item()
+            v[idx] = d*l_x + (1.0 - d)*g_x
+            # v[idx] = q_func(state).item()
             # v[idx] = max(g_x, min(l_x, v[idx]))
             it.iternext()
         # print("End value collection on grid.")

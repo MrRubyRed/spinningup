@@ -146,12 +146,13 @@ class Actor(nn.Module):
 
 class MLPCategoricalActor(Actor):
 
-    def __init__(self, obs_dim, act_dim, hidden_sizes, activation):
+    def __init__(self, obs_dim, act_dim, hidden_sizes, activation, mix_term=0.05):
         super().__init__()
         self.logits_net = mlp([obs_dim] + list(hidden_sizes) + [act_dim], activation)
 
     def _distribution(self, obs):
-        logits = self.logits_net(obs)
+        d = min(act_dim*mix_term, 1.0)
+        logits = d*(1.0/act_dim) + (1-d)*self.logits_net(obs)
         return Categorical(logits=logits)
 
     def _log_prob_from_distribution(self, pi, act):
@@ -179,7 +180,8 @@ class MLPCritic(nn.Module):
 
     def __init__(self, obs_dim, hidden_sizes, activation):
         super().__init__()
-        self.v_net = mlp([obs_dim] + list(hidden_sizes) + [1], activation)
+        self.v_net = mlp([obs_dim] + list(hidden_sizes) + [1], activation,
+                         output_activation=nn.Sigmoid)
 
     def forward(self, obs):
         return torch.squeeze(self.v_net(obs), -1) # Critical to ensure v has right shape.

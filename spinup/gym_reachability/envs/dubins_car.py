@@ -413,9 +413,16 @@ class DubinsCarEnv(gym.Env):
             if addBias:
                 v[idx] = q_func(state).min(dim=1)[0].item() + max(l_x, g_x)
             else:
-                v[idx] = max(g_x, min(l_x, q_func(state).item()))
+                d = q_func(state).item()
+                v[idx] = d*l_x + (1.0 - d)*g_x
+                # v[idx] = max(g_x, min(l_x, q_func(state).item()))
             it.iternext()
         return v
+
+    def get_margins(self, obs):
+        s_margin = self.safety_margin(obs)
+        t_margin = self.target_margin(obs)
+        return t_margin, s_margin
 
 # == Trajectory Functions ==
     def simulate_one_trajectory(self, policy, T=10, state=None, theta=None, toEnd=False):
